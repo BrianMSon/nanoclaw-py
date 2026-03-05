@@ -146,6 +146,8 @@ The Agent interacts with Telegram and the scheduler through these MCP tools:
 | `ANTHROPIC_BASE_URL` | — | Official | Custom API endpoint (proxy/gateway) |
 | `ASSISTANT_NAME` | — | `Ape` | Assistant's name |
 | `SCHEDULER_INTERVAL` | — | `60` | Task check interval (seconds) |
+| `AGENT_TIMEOUT` | — | `60` | Agent execution timeout (seconds) |
+| `TZ` | — | `Asia/Seoul` | Timezone ([list](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 
 > **Custom API Endpoint**: Set `ANTHROPIC_BASE_URL` to route requests through LiteLLM proxy, enterprise gateway, or any Anthropic Messages API compatible endpoint.
 
