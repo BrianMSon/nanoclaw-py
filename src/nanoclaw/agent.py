@@ -5,10 +5,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 
 from claude_agent_sdk import (
-    AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
-    TextBlock,
     create_sdk_mcp_server,
     query,
     tool,
@@ -119,13 +117,15 @@ async def _make_prompt(text: str) -> AsyncGenerator[dict, None]:
     yield {"type": "user", "message": {"role": "user", "content": text}}
 
 
-async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
+async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[str, bool]:
+    """Returns (response_text, message_already_sent)."""
     async with _agent_lock:
         return await _run_agent_inner(prompt, bot, chat_id, db_path)
 
 
-async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
-    tools = _create_tools(bot, chat_id, db_path)
+async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[str, bool]:
+    notify_state = {"sent": False}
+    tools = _create_tools(bot, chat_id, db_path, notify_state)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
 
     session_id = _load_session_id()
@@ -160,25 +160,21 @@ async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str) ->
     if session_id:
         options.resume = session_id
 
-    response_parts: list[str] = []
+    result_text = ""
 
     try:
         async for message in query(prompt=_make_prompt(prompt), options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response_parts.append(block.text)
-            elif isinstance(message, ResultMessage):
+            if isinstance(message, ResultMessage):
                 _save_session_id(message.session_id)
                 if message.result:
-                    response_parts.append(message.result)
+                    result_text = message.result
     except Exception:
-        if not response_parts:
+        if not result_text:
             logger.exception("Agent error")
-            return "Sorry, something went wrong while processing your request."
+            return "Sorry, something went wrong while processing your request.", False
         logger.debug("Ignoring query cleanup error", exc_info=True)
 
-    return "".join(response_parts) or "Done."
+    return (result_text or "Done."), notify_state["sent"]
 
 
 async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
@@ -214,20 +210,16 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
         env=env,
     )
 
-    response_parts: list[str] = []
+    result_text = ""
     try:
         async for message in query(prompt=_make_prompt(prompt), options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response_parts.append(block.text)
-            elif isinstance(message, ResultMessage):
+            if isinstance(message, ResultMessage):
                 if message.result:
-                    response_parts.append(message.result)
+                    result_text = message.result
     except Exception:
-        if not response_parts:
+        if not result_text:
             logger.exception("Task agent error")
             return "Task execution failed."
         logger.debug("Ignoring query cleanup error", exc_info=True)
 
-    return "".join(response_parts) or "Task completed."
+    return result_text or "Task completed."

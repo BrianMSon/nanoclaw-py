@@ -44,15 +44,16 @@ async def _handle_message(update: Update, context) -> None:
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    response = await run_agent(user_text, context.bot, chat_id, str(DB_PATH))
+    response, already_sent = await run_agent(user_text, context.bot, chat_id, str(DB_PATH))
 
     # Archive to conversations/ for long-term memory
     await archive_exchange(user_text, response, chat_id)
 
-    # Split long messages
-    for i in range(0, len(response), _TELEGRAM_MAX_LENGTH):
-        chunk = response[i : i + _TELEGRAM_MAX_LENGTH]
-        await update.message.reply_text(chunk)
+    # Skip reply if agent already sent the message via send_message tool
+    if not already_sent:
+        for i in range(0, len(response), _TELEGRAM_MAX_LENGTH):
+            chunk = response[i : i + _TELEGRAM_MAX_LENGTH]
+            await update.message.reply_text(chunk)
 
 
 async def _post_init(application: Application) -> None:
