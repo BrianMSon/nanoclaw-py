@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
@@ -26,6 +27,26 @@ from nanoclaw.config import (
 logger = logging.getLogger(__name__)
 
 _MAX_TURNS = 30
+
+# Patch SDK to ignore unknown message types (e.g. rate_limit_event) instead of crashing
+def _patch_message_parser():
+    try:
+        from claude_agent_sdk._internal import message_parser, client as _sdk_client
+        _original = message_parser.parse_message
+        def _patched(data):
+            try:
+                return _original(data)
+            except message_parser.MessageParseError as e:
+                if "Unknown message type" in str(e):
+                    logger.debug("Ignoring unknown message type: %s", data.get("type"))
+                    return None
+                raise
+        message_parser.parse_message = _patched
+        _sdk_client.parse_message = _patched  # client.py imports parse_message directly
+    except Exception:
+        logger.debug("Could not patch message_parser", exc_info=True)
+
+_patch_message_parser()
 
 
 def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict | None = None) -> list:
@@ -170,6 +191,7 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
     result_text = ""
     last_assistant_text = ""
     all_assistant_texts: list[str] = []
+    turn_count = 0
     if progress is not None:
         progress["last_text"] = ""
         progress["all_texts"] = all_assistant_texts
@@ -177,6 +199,7 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
     try:
         async for message in query(prompt=_make_prompt(prompt, history), options=options):
             if isinstance(message, AssistantMessage):
+                turn_count += 1
                 texts = [b.text for b in message.content if isinstance(b, TextBlock)]
                 if texts:
                     last_assistant_text = "\n".join(texts)
@@ -186,10 +209,17 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
             elif isinstance(message, ResultMessage):
                 if message.result:
                     result_text = message.result
+    except asyncio.CancelledError:
+        logger.info("Agent cancelled (result_text=%r)", result_text[:100] if result_text else "")
     except Exception:
         logger.exception("Agent error (result_text=%r)", result_text[:100] if result_text else "")
         if not result_text and not last_assistant_text:
             return "Sorry, something went wrong while processing your request."
+
+    if turn_count >= _MAX_TURNS:
+        logger.warning("Agent exhausted max_turns (%d)", _MAX_TURNS)
+        if notify_state is not None:
+            notify_state["max_turns_exhausted"] = True
 
     return result_text or last_assistant_text or "Done."
 
@@ -239,6 +269,8 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
             elif isinstance(message, ResultMessage):
                 if message.result:
                     result_text = message.result
+    except asyncio.CancelledError:
+        logger.info("Task agent cancelled (result_text=%r)", result_text[:100] if result_text else "")
     except Exception:
         if not result_text and not last_assistant_text:
             logger.exception("Task agent error")

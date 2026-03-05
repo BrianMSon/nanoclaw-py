@@ -1,5 +1,9 @@
 import asyncio
+import atexit
 import logging
+import os
+import subprocess
+import sys
 
 from nanoclaw.bot import setup_bot
 from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, STORE_DIR, WORKSPACE_DIR
@@ -14,30 +18,85 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+_PID_FILE = DATA_DIR / "nanoclaw.pid"
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Check if a process with given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _kill_existing() -> bool:
+    """Kill existing instance if running. Returns True if a process was killed."""
+    if not _PID_FILE.exists():
+        return False
+    try:
+        old_pid = int(_PID_FILE.read_text().strip())
+    except (ValueError, OSError):
+        _PID_FILE.unlink(missing_ok=True)
+        return False
+    if old_pid == os.getpid():
+        return False
+    if not _is_process_alive(old_pid):
+        _PID_FILE.unlink(missing_ok=True)
+        return False
+    logger.info("Killing existing instance (PID %d)...", old_pid)
+    try:
+        if sys.platform == "win32":
+            subprocess.call(["taskkill", "/F", "/T", "/PID", str(old_pid)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            import signal
+            os.kill(old_pid, signal.SIGTERM)
+    except OSError as e:
+        logger.warning("Failed to kill PID %d: %s", old_pid, e)
+        return False
+    import time
+    for _ in range(10):
+        if not _is_process_alive(old_pid):
+            break
+        time.sleep(0.5)
+    _PID_FILE.unlink(missing_ok=True)
+    return True
+
+
+def _acquire_lock() -> None:
+    """Write PID file and register cleanup."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _PID_FILE.write_text(str(os.getpid()))
+    atexit.register(lambda: _PID_FILE.unlink(missing_ok=True))
+
 
 async def _prepare_runtime() -> None:
-    # Create directories
     for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
-    # Initialize database
     await init_db(str(DB_PATH))
     logger.info("Database initialized at %s", DB_PATH)
 
-    # Ensure CLAUDE.md exists
     ensure_workspace()
     logger.info("Workspace ready at %s", WORKSPACE_DIR)
 
 
-def _run_bot() -> None:
+def _run_bot(drop_pending: bool = False) -> None:
     app = setup_bot()
     logger.info("%s is starting...", ASSISTANT_NAME)
-    app.run_polling()
+    app.run_polling(drop_pending_updates=drop_pending)
 
 
 def main() -> None:
+    killed = _kill_existing()
+    if killed:
+        logger.info("Previous instance terminated, waiting for Telegram session release...")
+        import time
+        time.sleep(3)
+    _acquire_lock()
     asyncio.run(_prepare_runtime())
-    _run_bot()
+    _run_bot(drop_pending=killed)
 
 
 if __name__ == "__main__":

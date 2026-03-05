@@ -1,10 +1,17 @@
 import os
+import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# PyInstaller: use exe directory as base, otherwise use source tree
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+load_dotenv(BASE_DIR / ".env")
 
 # Required
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -19,7 +26,6 @@ AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "300"))
 LOCAL_TZ = ZoneInfo(os.getenv("TZ", "Asia/Seoul"))
 
 # Paths
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
 WORKSPACE_DIR = BASE_DIR / "workspace"
 STORE_DIR = BASE_DIR / "store"
 DATA_DIR = BASE_DIR / "data"

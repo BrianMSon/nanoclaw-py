@@ -95,39 +95,62 @@ async def _handle_message(update: Update, context) -> None:
 
     response = ""
     notify_state: dict = {"sent": False, "messages": []}
+    progress: dict = {"last_text": "", "all_texts": []}
 
     attempt = 0
     try:
         while True:
             attempt += 1
-            # Build prompt: on retry, include already-sent messages so agent doesn't repeat work
             if attempt == 1:
                 prompt = user_text
             else:
-                delivered = "\n\n---\n\n".join(notify_state["messages"])
+                # Build context from previous attempt: sent messages + agent's work log
+                sections = []
+                if notify_state["messages"]:
+                    delivered = "\n\n---\n\n".join(notify_state["messages"])
+                    sections.append(f"<already_delivered>\n{delivered}\n</already_delivered>")
+                # Include agent's reasoning/work from previous attempt (last 3 substantive texts)
+                prev_texts = [t for t in progress.get("all_texts", []) if len(t) > 100]
+                if prev_texts:
+                    work_log = "\n\n---\n\n".join(prev_texts[-3:])
+                    sections.append(f"<previous_work>\n{work_log}\n</previous_work>")
+
+                context_block = "\n\n".join(sections)
                 prompt = (
                     f"[System: Previous attempt timed out. "
-                    f"The following results were already delivered to the user via send_message — "
-                    f"do NOT repeat them. Continue only the remaining work.]\n\n"
-                    f"<already_delivered>\n{delivered}\n</already_delivered>\n\n"
+                    f"Review the context below and continue from where it left off. "
+                    f"Do NOT repeat already-delivered results or redo completed analysis.]\n\n"
+                    f"{context_block}\n\n"
                     f"{user_text}"
                 )
+                # Reset progress for new attempt (keep notify_state across attempts)
+                progress = {"last_text": "", "all_texts": []}
             try:
-                response = await asyncio.wait_for(
+                agent_task = asyncio.create_task(
                     run_agent(prompt, context.bot, chat_id, str(DB_PATH),
-                              history=history, notify_state=notify_state),
-                    timeout=_AGENT_TIMEOUT,
+                              history=history, notify_state=notify_state, progress=progress)
                 )
-                break  # success
+                done, _ = await asyncio.wait({agent_task}, timeout=_AGENT_TIMEOUT)
+                if done:
+                    response = agent_task.result()
+                    if notify_state.get("max_turns_exhausted"):
+                        # Agent hit max_turns — treat like timeout for retry
+                        logger.warning("Agent exhausted max_turns (attempt %d)", attempt)
+                        notify_state["max_turns_exhausted"] = False
+                        raise asyncio.TimeoutError()
+                    break  # success
+                else:
+                    # Timeout — cancel and give agent a grace period to clean up
+                    agent_task.cancel()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(agent_task), timeout=5)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+                    raise asyncio.TimeoutError()
             except asyncio.TimeoutError:
                 logger.warning("Agent timed out (attempt %d) for: %s", attempt, user_text[:100])
                 stop_typing.set()
                 await typing_task
-
-                # If agent already delivered results via send_message, just finish
-                if notify_state["sent"]:
-                    response = ""
-                    break
 
                 # Check auto-continue
                 remaining = _auto_continue.get(chat_id, 0)
