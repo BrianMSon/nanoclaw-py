@@ -1,7 +1,8 @@
 """Conversation archiving for long-term memory."""
 
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from nanoclaw.config import WORKSPACE_DIR
@@ -20,6 +21,51 @@ def _get_today_file() -> Path:
     """Get the conversation file for today."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return CONVERSATIONS_DIR / f"{today}.md"
+
+
+def _parse_exchanges(text: str) -> list[tuple[str, str]]:
+    """Parse markdown conversation file into (user, assistant) pairs."""
+    blocks = re.split(r"^---\s*$", text, flags=re.MULTILINE)
+    exchanges = []
+    for block in blocks:
+        user_match = re.search(r"\*\*User\*\*:\s*(.+?)(?=\n\*\*Ape\*\*:|\Z)", block, re.DOTALL)
+        ape_match = re.search(r"\*\*Ape\*\*:\s*(.+?)(?=\n---|\Z)", block, re.DOTALL)
+        if user_match and ape_match:
+            exchanges.append((user_match.group(1).strip(), ape_match.group(1).strip()))
+    return exchanges
+
+
+def get_recent_history(max_exchanges: int = 10) -> str:
+    """Load recent exchanges from conversation files and return as formatted text."""
+    if not CONVERSATIONS_DIR.exists():
+        return ""
+
+    now = datetime.now(timezone.utc)
+    exchanges: list[tuple[str, str]] = []
+
+    # Check today and yesterday
+    for days_ago in range(2):
+        date_str = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+        filepath = CONVERSATIONS_DIR / f"{date_str}.md"
+        if filepath.exists():
+            try:
+                content = filepath.read_text(encoding="utf-8")
+                parsed = _parse_exchanges(content)
+                exchanges = parsed + exchanges if days_ago > 0 else parsed
+            except Exception:
+                logger.exception(f"Failed to read {filepath}")
+
+    if not exchanges:
+        return ""
+
+    # Take the last N exchanges
+    recent = exchanges[-max_exchanges:]
+    lines = []
+    for user_msg, ape_msg in recent:
+        lines.append(f"User: {user_msg}")
+        lines.append(f"Assistant: {ape_msg}")
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 async def archive_exchange(user_message: str, assistant_response: str, chat_id: int) -> None:

@@ -7,7 +7,7 @@ from croniter import croniter
 
 from nanoclaw import db
 from nanoclaw.agent import run_task_agent
-from nanoclaw.config import SCHEDULER_INTERVAL
+from nanoclaw.config import LOCAL_TZ, SCHEDULER_INTERVAL
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +69,15 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
     # Calculate next_run
     stype = task["schedule_type"]
     svalue = task["schedule_value"]
-    now = datetime.now(timezone.utc)
+    now_utc = datetime.now(timezone.utc)
 
     if stype == "cron":
-        next_run = croniter(svalue, now).get_next(datetime).isoformat()
+        # Cron expressions are interpreted in local time
+        now_local = now_utc.astimezone(LOCAL_TZ)
+        next_run = croniter(svalue, now_local).get_next(datetime).astimezone(timezone.utc).isoformat()
         await db.update_task_after_run(db_path, task_id, result, next_run, "active")
     elif stype == "interval":
-        next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
+        next_run = (now_utc + timedelta(milliseconds=int(svalue))).isoformat()
         await db.update_task_after_run(db_path, task_id, result, next_run, "active")
     elif stype == "once":
         await db.update_task_after_run(db_path, task_id, result, None, "completed")

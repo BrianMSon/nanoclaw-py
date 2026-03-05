@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -14,6 +15,7 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Ape")
 SCHEDULER_INTERVAL = int(os.getenv("SCHEDULER_INTERVAL", "60"))
+LOCAL_TZ = ZoneInfo(os.getenv("TZ", "Asia/Seoul"))
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

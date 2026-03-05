@@ -15,6 +15,7 @@ from nanoclaw import db
 from nanoclaw.config import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_BASE_URL,
+    LOCAL_TZ,
     STATE_FILE,
     WORKSPACE_DIR,
 )
@@ -38,12 +39,15 @@ def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, 
     async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
         stype = args["schedule_type"]
         svalue = args["schedule_value"]
-        now = datetime.now(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        now_local = now_utc.astimezone(LOCAL_TZ)
 
         if stype == "cron":
-            next_run = croniter(svalue, now).get_next(datetime).isoformat()
+            # Cron expressions are interpreted in local time
+            next_local = croniter(svalue, now_local).get_next(datetime)
+            next_run = next_local.astimezone(timezone.utc).isoformat()
         elif stype == "interval":
-            next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
+            next_run = (now_utc + timedelta(milliseconds=int(svalue))).isoformat()
         elif stype == "once":
             next_run = datetime.fromisoformat(svalue).astimezone(timezone.utc).isoformat()
         else:
@@ -53,11 +57,12 @@ def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, 
             }
 
         task_id = await db.create_task(db_path, chat_id, args["prompt"], stype, svalue, next_run)
+        local_next = datetime.fromisoformat(next_run).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
         return {
             "content": [
                 {
                     "type": "text",
-                    "text": f"Task {task_id} scheduled. Next run: {next_run}",
+                    "text": f"Task {task_id} scheduled. Next run: {local_next}",
                 }
             ]
         }
@@ -67,7 +72,12 @@ def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, 
         tasks = await db.get_all_tasks(db_path)
         if not tasks:
             return {"content": [{"type": "text", "text": "No scheduled tasks."}]}
-        lines = [f"- [{t['id']}] {t['status']} | {t['schedule_type']}({t['schedule_value']}) | {t['prompt'][:60]}" for t in tasks]
+        lines = []
+        for t in tasks:
+            next_run = t.get("next_run", "")
+            if next_run:
+                next_run = datetime.fromisoformat(next_run).astimezone(LOCAL_TZ).strftime("%m-%d %H:%M")
+            lines.append(f"- [{t['id']}] {t['status']} | {t['schedule_type']}({t['schedule_value']}) | next: {next_run} | {t['prompt'][:60]}")
         return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
     @tool("pause_task", "Pause a scheduled task", {"task_id": str})
@@ -97,15 +107,18 @@ def clear_session_id() -> None:
         STATE_FILE.unlink()
 
 
-async def _make_prompt(text: str) -> AsyncGenerator[dict, None]:
-    """Create async generator prompt to work around SDK MCP bug."""
-    yield {"type": "user", "message": {"role": "user", "content": text}}
+async def _make_prompt(text: str, history: str = "") -> AsyncGenerator[dict, None]:
+    """Create async generator prompt with conversation history for context continuity."""
+    if history:
+        content = f"<conversation_history>\n{history}\n</conversation_history>\n\n{text}"
+    else:
+        content = text
+    yield {"type": "user", "message": {"role": "user", "content": content}}
 
 
-async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[str, bool]:
-    """Returns (response_text, message_already_sent). Each call runs independently (no session resume)."""
-    notify_state = {"sent": False}
-    tools = _create_tools(bot, chat_id, db_path, notify_state)
+async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "") -> str:
+    """Returns response_text."""
+    tools = _create_tools(bot, chat_id, db_path)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
 
     env = {"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY}
@@ -115,7 +128,7 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
-        max_turns=6,
+        max_turns=15,
         allowed_tools=[
             "Bash",
             "Read",
@@ -140,16 +153,16 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[
     result_text = ""
 
     try:
-        async for message in query(prompt=_make_prompt(prompt), options=options):
+        async for message in query(prompt=_make_prompt(prompt, history), options=options):
             if isinstance(message, ResultMessage):
                 if message.result:
                     result_text = message.result
     except Exception:
         logger.exception("Agent error (result_text=%r)", result_text[:100] if result_text else "")
         if not result_text:
-            return "Sorry, something went wrong while processing your request.", False
+            return "Sorry, something went wrong while processing your request."
 
-    return (result_text or "Done."), notify_state["sent"]
+    return result_text or "Done."
 
 
 async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
@@ -164,7 +177,7 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
-        max_turns=6,
+        max_turns=15,
         allowed_tools=[
             "Bash",
             "Read",
