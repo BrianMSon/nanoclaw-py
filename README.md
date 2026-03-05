@@ -143,7 +143,7 @@ The Agent interacts with Telegram and the scheduler through these MCP tools:
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | Telegram Bot Token |
 | `OWNER_ID` | ✅ | — | Your Telegram user ID |
-| `ANTHROPIC_API_KEY` | ✅ | — | Anthropic API Key |
+| `ANTHROPIC_API_KEY` | ▲ | — | Anthropic API Key |
 | `ANTHROPIC_BASE_URL` | — | Official | Custom API endpoint (proxy/gateway) |
 | `ASSISTANT_NAME` | — | `Ape` | Assistant's name |
 | `SCHEDULER_INTERVAL` | — | `60` | Task check interval (seconds) |

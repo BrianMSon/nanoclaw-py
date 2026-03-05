@@ -1,5 +1,3 @@
-import asyncio
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
@@ -17,14 +15,11 @@ from nanoclaw import db
 from nanoclaw.config import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_BASE_URL,
-    DATA_DIR,
     STATE_FILE,
     WORKSPACE_DIR,
 )
 
 logger = logging.getLogger(__name__)
-_user_lock = asyncio.Lock()
-_task_lock = asyncio.Lock()
 
 
 def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> list:
@@ -96,19 +91,6 @@ def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, 
     return [send_message, schedule_task, list_tasks, pause_task, resume_task, cancel_task]
 
 
-def _load_session_id() -> str | None:
-    if STATE_FILE.exists():
-        data = json.loads(STATE_FILE.read_text())
-        return data.get("session_id")
-    return None
-
-
-def _save_session_id(session_id: str) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"session_id": session_id}))
-    tmp.replace(STATE_FILE)
-
 
 def clear_session_id() -> None:
     if STATE_FILE.exists():
@@ -121,17 +103,10 @@ async def _make_prompt(text: str) -> AsyncGenerator[dict, None]:
 
 
 async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[str, bool]:
-    """Returns (response_text, message_already_sent)."""
-    async with _user_lock:
-        return await _run_agent_inner(prompt, bot, chat_id, db_path)
-
-
-async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[str, bool]:
+    """Returns (response_text, message_already_sent). Each call runs independently (no session resume)."""
     notify_state = {"sent": False}
     tools = _create_tools(bot, chat_id, db_path, notify_state)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
-
-    session_id = _load_session_id()
 
     env = {"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY}
     if ANTHROPIC_BASE_URL:
@@ -140,6 +115,7 @@ async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str) ->
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
+        max_turns=6,
         allowed_tools=[
             "Bash",
             "Read",
@@ -160,33 +136,24 @@ async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str) ->
         mcp_servers={"nanoclaw": mcp_server},
         env=env,
     )
-    if session_id:
-        options.resume = session_id
 
     result_text = ""
 
     try:
         async for message in query(prompt=_make_prompt(prompt), options=options):
             if isinstance(message, ResultMessage):
-                _save_session_id(message.session_id)
                 if message.result:
                     result_text = message.result
     except Exception:
+        logger.exception("Agent error (result_text=%r)", result_text[:100] if result_text else "")
         if not result_text:
-            logger.exception("Agent error")
             return "Sorry, something went wrong while processing your request.", False
-        logger.debug("Ignoring query cleanup error", exc_info=True)
 
     return (result_text or "Done."), notify_state["sent"]
 
 
 async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     """Run agent for scheduled tasks — no session resume."""
-    async with _task_lock:
-        return await _run_task_agent_inner(prompt, bot, chat_id, db_path, notify_state)
-
-
-async def _run_task_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     tools = _create_tools(bot, chat_id, db_path, notify_state)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
 
@@ -197,6 +164,7 @@ async def _run_task_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: st
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
+        max_turns=6,
         allowed_tools=[
             "Bash",
             "Read",

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telegram import Update
@@ -12,6 +13,8 @@ from nanoclaw.scheduler import setup_scheduler
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_MAX_LENGTH = 4096
+_AGENT_TIMEOUT = 600  # seconds — hard limit for agent response
+_TYPING_INTERVAL = 4  # seconds — Telegram typing status lasts ~5s
 
 
 def _is_owner(update: Update) -> bool:
@@ -35,6 +38,20 @@ async def _clear(update: Update, context) -> None:
     await update.message.reply_text("Session cleared. Starting fresh!")
 
 
+async def _keep_typing(bot, chat_id: int, stop: asyncio.Event) -> None:
+    """Send typing indicator every few seconds until stopped."""
+    while not stop.is_set():
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_TYPING_INTERVAL)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _handle_message(update: Update, context) -> None:
     if not _is_owner(update) or not update.message or not update.message.text:
         return
@@ -42,9 +59,21 @@ async def _handle_message(update: Update, context) -> None:
     chat_id = update.effective_chat.id
     user_text = update.message.text
 
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id, stop_typing))
 
-    response, already_sent = await run_agent(user_text, context.bot, chat_id, str(DB_PATH))
+    try:
+        response, already_sent = await asyncio.wait_for(
+            run_agent(user_text, context.bot, chat_id, str(DB_PATH)),
+            timeout=_AGENT_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        response = "⏱ 응답 시간이 초과되었어요. 좀 더 간단하게 다시 질문해주세요."
+        already_sent = False
+        logger.warning("Agent timed out after %ds for: %s", _AGENT_TIMEOUT, user_text[:100])
+    finally:
+        stop_typing.set()
+        await typing_task
 
     # Archive to conversations/ for long-term memory
     await archive_exchange(user_text, response, chat_id)
@@ -67,7 +96,7 @@ async def _post_init(application: Application) -> None:
 
 
 def setup_bot() -> Application:
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).concurrent_updates(True).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("clear", _clear))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
