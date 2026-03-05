@@ -15,6 +15,7 @@ from croniter import croniter
 
 from nanoclaw import db
 from nanoclaw.config import (
+    AGENT_TIMEOUT,
     ANTHROPIC_API_KEY,
     ANTHROPIC_BASE_URL,
     LOCAL_TZ,
@@ -109,17 +110,18 @@ def clear_session_id() -> None:
         STATE_FILE.unlink()
 
 
-async def _make_prompt(text: str, history: str = "") -> AsyncGenerator[dict, None]:
+async def _make_prompt(text: str, history: str = "", timeout: int = AGENT_TIMEOUT) -> AsyncGenerator[dict, None]:
     """Create async generator prompt with conversation history for context continuity."""
+    time_notice = f"[시스템: 응답 시간 제한 {timeout}초. 시간 내에 최종 텍스트 응답을 반드시 완료할 것.]\n\n"
     if history:
-        content = f"<conversation_history>\n{history}\n</conversation_history>\n\n{text}"
+        content = f"{time_notice}<conversation_history>\n{history}\n</conversation_history>\n\n{text}"
     else:
-        content = text
+        content = f"{time_notice}{text}"
     yield {"type": "user", "message": {"role": "user", "content": content}}
 
 
-async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "") -> str:
-    """Returns response_text."""
+async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "", progress: dict | None = None) -> str:
+    """Returns response_text. If progress dict is passed, updates progress["last_text"] with latest assistant output."""
     notify_state: dict[str, bool] = {"sent": False}
     tools = _create_tools(bot, chat_id, db_path, notify_state)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
@@ -131,7 +133,7 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
-        max_turns=15,
+        max_turns=10,
         allowed_tools=[
             "Bash",
             "Read",
@@ -155,6 +157,10 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
 
     result_text = ""
     last_assistant_text = ""
+    all_assistant_texts: list[str] = []
+    if progress is not None:
+        progress["last_text"] = ""
+        progress["all_texts"] = all_assistant_texts
 
     try:
         async for message in query(prompt=_make_prompt(prompt, history), options=options):
@@ -162,6 +168,9 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
                 texts = [b.text for b in message.content if isinstance(b, TextBlock)]
                 if texts:
                     last_assistant_text = "\n".join(texts)
+                    all_assistant_texts.append(last_assistant_text)
+                    if progress is not None:
+                        progress["last_text"] = last_assistant_text
             elif isinstance(message, ResultMessage):
                 if message.result:
                     result_text = message.result
@@ -185,7 +194,7 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
-        max_turns=15,
+        max_turns=10,
         allowed_tools=[
             "Bash",
             "Read",

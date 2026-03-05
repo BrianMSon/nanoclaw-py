@@ -7,13 +7,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from nanoclaw.agent import run_agent, clear_session_id
 from nanoclaw.conversations import archive_exchange, get_recent_history
-from nanoclaw.config import ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
+from nanoclaw.config import AGENT_TIMEOUT, ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
 from nanoclaw.scheduler import setup_scheduler
 
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_MAX_LENGTH = 4096
-_AGENT_TIMEOUT = 300  # seconds — hard limit for agent response
+_AGENT_TIMEOUT = AGENT_TIMEOUT
 _TYPING_INTERVAL = 4  # seconds — Telegram typing status lasts ~5s
 
 # Track active tasks per chat: {chat_id: "description of current task"}
@@ -76,14 +76,48 @@ async def _handle_message(update: Update, context) -> None:
     history_size = 3 if len(update.message.text) < 30 else 10
     history = get_recent_history(max_exchanges=history_size)
 
+    max_retries = 3
+    accumulated_texts: list[str] = []
+    response = ""
+
     try:
-        response = await asyncio.wait_for(
-            run_agent(user_text, context.bot, chat_id, str(DB_PATH), history=history),
-            timeout=_AGENT_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        response = "⏱ 응답 시간이 초과되었어요. 좀 더 간단하게 다시 질문해주세요."
-        logger.warning("Agent timed out after %ds for: %s", _AGENT_TIMEOUT, user_text[:100])
+        for attempt in range(max_retries):
+            progress: dict = {"last_text": "", "all_texts": []}
+            if attempt == 0:
+                current_prompt = user_text
+            else:
+                partial = "\n\n".join(accumulated_texts)
+                current_prompt = (
+                    f"[시스템: 이전 작업이 시간 초과로 중단됨 (시도 {attempt + 1}/{max_retries}). "
+                    f"여기까지 진행된 내용을 바탕으로 나머지를 완료할 것.]\n\n"
+                    f"<partial_result>\n{partial}\n</partial_result>\n\n"
+                    f"원래 요청: {user_text}\n\n"
+                    f"위 partial_result를 이어서 완성해주세요. 이미 분석한 내용은 반복하지 말고 나머지만 처리하세요."
+                )
+
+            try:
+                response = await asyncio.wait_for(
+                    run_agent(current_prompt, context.bot, chat_id, str(DB_PATH), history=history, progress=progress),
+                    timeout=_AGENT_TIMEOUT,
+                )
+                break  # 성공 시 루프 종료
+            except asyncio.TimeoutError:
+                all_texts = progress.get("all_texts", [])
+                best = max(all_texts, key=len, default="") if all_texts else ""
+                if best:
+                    accumulated_texts.append(best)
+                logger.warning("Agent timed out (attempt %d/%d) for: %s", attempt + 1, max_retries, user_text[:100])
+
+                if attempt == max_retries - 1:
+                    if accumulated_texts:
+                        response = "⏱ 시간 초과 — 여기까지 정리된 내용:\n\n" + "\n\n".join(accumulated_texts)
+                    else:
+                        response = "⏱ 응답 시간이 초과되었어요. 좀 더 간단하게 다시 질문해주세요."
+                else:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⏱ 시간 초과 — 이어서 진행합니다 ({attempt + 1}/{max_retries})...",
+                    )
     finally:
         _active_tasks.pop(chat_id, None)
         stop_typing.set()
