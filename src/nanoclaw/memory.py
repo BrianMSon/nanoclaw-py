@@ -31,6 +31,12 @@ Your conversation history is stored in `conversations/` folder:
 - Use Glob and Grep to search past conversations
 - Example: `Grep pattern="weather" path="conversations/"` to find weather-related chats
 
+## Progress Reporting
+For long-running tasks (analysis, code review, multi-step research):
+- Send intermediate findings/results via `mcp__nanoclaw__send_message` as you go
+- Don't wait until the end — deliver partial results early so the user sees progress
+- If you find something important, send it immediately before continuing
+
 ## User Preferences
 (Add user preferences as you learn them)
 """
@@ -40,5 +46,5 @@ def ensure_workspace() -> None:
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
     ensure_conversations_dir()
     claude_md = WORKSPACE_DIR / "CLAUDE.md"
-    if not claude_md.exists():
-        claude_md.write_text(_INITIAL_CLAUDE_MD)
+    if not claude_md.exists() or claude_md.stat().st_size == 0:
+        claude_md.write_text(_INITIAL_CLAUDE_MD, encoding="utf-8")

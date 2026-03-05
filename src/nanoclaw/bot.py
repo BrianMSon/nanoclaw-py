@@ -1,9 +1,9 @@
 import asyncio
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from nanoclaw.agent import run_agent, clear_session_id
 from nanoclaw.conversations import archive_exchange, get_recent_history
@@ -13,7 +13,10 @@ from nanoclaw.scheduler import setup_scheduler
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_MAX_LENGTH = 4096
+_continue_futures: dict[int, asyncio.Future] = {}  # chat_id -> Future[bool]
+_auto_continue: dict[int, int] = {}  # chat_id -> remaining auto-retries
 _AGENT_TIMEOUT = AGENT_TIMEOUT
+_MAX_AUTO_RETRIES = 3
 _TYPING_INTERVAL = 4  # seconds — Telegram typing status lasts ~5s
 
 # Track active tasks per chat: {chat_id: "description of current task"}
@@ -55,6 +58,20 @@ async def _keep_typing(bot, chat_id: int, stop: asyncio.Event) -> None:
             pass
 
 
+async def _handle_continue(update: Update, context) -> None:
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    labels = {"continue_yes": "Continued ▶", "continue_no": "Stopped ■", "continue_auto": "Auto-continued ▶▶"}
+    chosen = labels.get(query.data, query.data)
+    await query.edit_message_text(f"{query.message.text}\n\n→ {chosen}")
+    if query.data == "continue_auto":
+        _auto_continue[chat_id] = _MAX_AUTO_RETRIES
+    fut = _continue_futures.pop(chat_id, None)
+    if fut and not fut.done():
+        fut.set_result(query.data in ("continue_yes", "continue_auto"))
+
+
 async def _handle_message(update: Update, context) -> None:
     if not _is_owner(update) or not update.message or not update.message.text:
         return
@@ -65,7 +82,7 @@ async def _handle_message(update: Update, context) -> None:
     # Inject active task info into prompt so the agent is aware
     active = _active_tasks.get(chat_id)
     if active:
-        user_text = f"[시스템: 현재 다른 작업이 병렬로 진행 중입니다 — \"{active}\"]\n\n{user_text}"
+        user_text = f"[System: Another task is running in parallel — \"{active}\"]\n\n{user_text}"
 
     _active_tasks[chat_id] = update.message.text[:60]
 
@@ -76,50 +93,78 @@ async def _handle_message(update: Update, context) -> None:
     history_size = 3 if len(update.message.text) < 30 else 10
     history = get_recent_history(max_exchanges=history_size)
 
-    max_retries = 3
-    accumulated_texts: list[str] = []
     response = ""
+    notify_state: dict = {"sent": False, "messages": []}
 
+    attempt = 0
     try:
-        for attempt in range(max_retries):
-            progress: dict = {"last_text": "", "all_texts": []}
-            if attempt == 0:
-                current_prompt = user_text
+        while True:
+            attempt += 1
+            # Build prompt: on retry, include already-sent messages so agent doesn't repeat work
+            if attempt == 1:
+                prompt = user_text
             else:
-                partial = "\n\n".join(accumulated_texts)
-                current_prompt = (
-                    f"[시스템: 이전 작업이 시간 초과로 중단됨 (시도 {attempt + 1}/{max_retries}). "
-                    f"여기까지 진행된 내용을 바탕으로 나머지를 완료할 것.]\n\n"
-                    f"<partial_result>\n{partial}\n</partial_result>\n\n"
-                    f"원래 요청: {user_text}\n\n"
-                    f"위 partial_result를 이어서 완성해주세요. 이미 분석한 내용은 반복하지 말고 나머지만 처리하세요."
+                delivered = "\n\n---\n\n".join(notify_state["messages"])
+                prompt = (
+                    f"[System: Previous attempt timed out. "
+                    f"The following results were already delivered to the user via send_message — "
+                    f"do NOT repeat them. Continue only the remaining work.]\n\n"
+                    f"<already_delivered>\n{delivered}\n</already_delivered>\n\n"
+                    f"{user_text}"
                 )
-
             try:
                 response = await asyncio.wait_for(
-                    run_agent(current_prompt, context.bot, chat_id, str(DB_PATH), history=history, progress=progress),
+                    run_agent(prompt, context.bot, chat_id, str(DB_PATH),
+                              history=history, notify_state=notify_state),
                     timeout=_AGENT_TIMEOUT,
                 )
-                break  # 성공 시 루프 종료
+                break  # success
             except asyncio.TimeoutError:
-                all_texts = progress.get("all_texts", [])
-                best = max(all_texts, key=len, default="") if all_texts else ""
-                if best:
-                    accumulated_texts.append(best)
-                logger.warning("Agent timed out (attempt %d/%d) for: %s", attempt + 1, max_retries, user_text[:100])
+                logger.warning("Agent timed out (attempt %d) for: %s", attempt, user_text[:100])
+                stop_typing.set()
+                await typing_task
 
-                if attempt == max_retries - 1:
-                    if accumulated_texts:
-                        response = "⏱ 시간 초과 — 여기까지 정리된 내용:\n\n" + "\n\n".join(accumulated_texts)
-                    else:
-                        response = "⏱ 응답 시간이 초과되었어요. 좀 더 간단하게 다시 질문해주세요."
-                else:
+                # If agent already delivered results via send_message, just finish
+                if notify_state["sent"]:
+                    response = ""
+                    break
+
+                # Check auto-continue
+                remaining = _auto_continue.get(chat_id, 0)
+                if remaining > 0:
+                    _auto_continue[chat_id] = remaining - 1
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"⏱ 시간 초과 — 이어서 진행합니다 ({attempt + 1}/{max_retries})...",
+                        text=f"⏱ Timed out (attempt {attempt}) — \"{update.message.text[:50]}\" — auto-retrying ({remaining} left)...",
                     )
+                    should_continue = True
+                else:
+                    _auto_continue.pop(chat_id, None)
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Continue", callback_data="continue_yes"),
+                         InlineKeyboardButton("Don't ask", callback_data="continue_auto"),
+                         InlineKeyboardButton("Stop", callback_data="continue_no")],
+                    ])
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⏱ Timed out (attempt {attempt}) — \"{update.message.text[:50]}\" — retry?",
+                        reply_markup=keyboard,
+                    )
+
+                    fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+                    _continue_futures[chat_id] = fut
+                    should_continue = await fut
+
+                if not should_continue:
+                    response = ""
+                    break
+
+                # Resume typing for next attempt
+                stop_typing = asyncio.Event()
+                typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id, stop_typing))
     finally:
         _active_tasks.pop(chat_id, None)
+        _auto_continue.pop(chat_id, None)
         stop_typing.set()
         await typing_task
 
@@ -147,5 +192,6 @@ def setup_bot() -> Application:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).concurrent_updates(True).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("clear", _clear))
+    app.add_handler(CallbackQueryHandler(_handle_continue, pattern="^continue_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     return app

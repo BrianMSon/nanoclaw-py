@@ -25,13 +25,16 @@ from nanoclaw.config import (
 
 logger = logging.getLogger(__name__)
 
+_MAX_TURNS = 30
 
-def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> list:
+
+def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict | None = None) -> list:
     @tool("send_message", "Send a message to the user on Telegram", {"text": str})
     async def send_message(args: dict[str, Any]) -> dict[str, Any]:
         await bot.send_message(chat_id=chat_id, text=args["text"])
         if notify_state is not None:
             notify_state["sent"] = True
+            notify_state.setdefault("messages", []).append(args["text"])
         return {"content": [{"type": "text", "text": "Message sent."}]}
 
     @tool(
@@ -115,7 +118,11 @@ def clear_session_id() -> None:
 
 async def _make_prompt(text: str, history: str = "", timeout: int = AGENT_TIMEOUT) -> AsyncGenerator[dict, None]:
     """Create async generator prompt with conversation history for context continuity."""
-    time_notice = f"[시스템: 응답 시간 제한 {timeout}초. 시간 내에 최종 텍스트 응답을 반드시 완료할 것.]\n\n"
+    time_notice = (
+        f"[System: Time limit {timeout}s. "
+        f"For long tasks, send intermediate findings via mcp__nanoclaw__send_message "
+        f"before time runs out. Deliver results incrementally.]\n\n"
+    )
     if history:
         content = f"{time_notice}<conversation_history>\n{history}\n</conversation_history>\n\n{text}"
     else:
@@ -123,9 +130,11 @@ async def _make_prompt(text: str, history: str = "", timeout: int = AGENT_TIMEOU
     yield {"type": "user", "message": {"role": "user", "content": content}}
 
 
-async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "", progress: dict | None = None) -> str:
+async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "",
+                    progress: dict | None = None, notify_state: dict | None = None) -> str:
     """Returns response_text. If progress dict is passed, updates progress["last_text"] with latest assistant output."""
-    notify_state: dict[str, bool] = {"sent": False}
+    if notify_state is None:
+        notify_state = {"sent": False, "messages": []}
     tools = _create_tools(bot, chat_id, db_path, notify_state)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
 
@@ -136,7 +145,7 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
-        max_turns=10,
+        max_turns=_MAX_TURNS,
         allowed_tools=[
             "Bash",
             "Read",
@@ -197,7 +206,7 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE_DIR),
         setting_sources=["project"],
-        max_turns=10,
+        max_turns=_MAX_TURNS,
         allowed_tools=[
             "Bash",
             "Read",
