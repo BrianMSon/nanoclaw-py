@@ -23,7 +23,8 @@ from nanoclaw.config import (
 )
 
 logger = logging.getLogger(__name__)
-_agent_lock = asyncio.Lock()
+_user_lock = asyncio.Lock()
+_task_lock = asyncio.Lock()
 
 
 def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> list:
@@ -104,7 +105,9 @@ def _load_session_id() -> str | None:
 
 def _save_session_id(session_id: str) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps({"session_id": session_id}))
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"session_id": session_id}))
+    tmp.replace(STATE_FILE)
 
 
 def clear_session_id() -> None:
@@ -119,7 +122,7 @@ async def _make_prompt(text: str) -> AsyncGenerator[dict, None]:
 
 async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> tuple[str, bool]:
     """Returns (response_text, message_already_sent)."""
-    async with _agent_lock:
+    async with _user_lock:
         return await _run_agent_inner(prompt, bot, chat_id, db_path)
 
 
@@ -179,6 +182,11 @@ async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str) ->
 
 async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     """Run agent for scheduled tasks — no session resume."""
+    async with _task_lock:
+        return await _run_task_agent_inner(prompt, bot, chat_id, db_path, notify_state)
+
+
+async def _run_task_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     tools = _create_tools(bot, chat_id, db_path, notify_state)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
 

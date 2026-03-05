@@ -53,7 +53,11 @@ async def _handle_message(update: Update, context) -> None:
     if not already_sent:
         for i in range(0, len(response), _TELEGRAM_MAX_LENGTH):
             chunk = response[i : i + _TELEGRAM_MAX_LENGTH]
-            await update.message.reply_text(chunk)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                reply_to_message_id=update.message.message_id,
+            )
 
 
 async def _post_init(application: Application) -> None:
