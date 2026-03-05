@@ -18,7 +18,6 @@
   <a href="#-architecture">Architecture</a> •
   <a href="#%EF%B8%8F-configuration">Configuration</a> •
   <a href="#-faq">FAQ</a> •
-  <a href="#-中文文档">中文</a>
 </p>
 
 </div>
@@ -211,7 +210,6 @@ Yes. Set `ANTHROPIC_BASE_URL` to your proxy address. It must be compatible with 
 
 ## 📄 License
 
-[MIT](LICENSE)
+MIT
 
----
 
