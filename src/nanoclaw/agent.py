@@ -3,8 +3,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 
 from claude_agent_sdk import (
+    AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
+    TextBlock,
     create_sdk_mcp_server,
     query,
     tool,
@@ -118,7 +120,8 @@ async def _make_prompt(text: str, history: str = "") -> AsyncGenerator[dict, Non
 
 async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "") -> str:
     """Returns response_text."""
-    tools = _create_tools(bot, chat_id, db_path)
+    notify_state: dict[str, bool] = {"sent": False}
+    tools = _create_tools(bot, chat_id, db_path, notify_state)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
 
     env = {"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY}
@@ -151,18 +154,23 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
     )
 
     result_text = ""
+    last_assistant_text = ""
 
     try:
         async for message in query(prompt=_make_prompt(prompt, history), options=options):
-            if isinstance(message, ResultMessage):
+            if isinstance(message, AssistantMessage):
+                texts = [b.text for b in message.content if isinstance(b, TextBlock)]
+                if texts:
+                    last_assistant_text = "\n".join(texts)
+            elif isinstance(message, ResultMessage):
                 if message.result:
                     result_text = message.result
     except Exception:
         logger.exception("Agent error (result_text=%r)", result_text[:100] if result_text else "")
-        if not result_text:
+        if not result_text and not last_assistant_text:
             return "Sorry, something went wrong while processing your request."
 
-    return result_text or "Done."
+    return result_text or last_assistant_text or "Done."
 
 
 async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
@@ -200,15 +208,20 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
     )
 
     result_text = ""
+    last_assistant_text = ""
     try:
         async for message in query(prompt=_make_prompt(prompt), options=options):
-            if isinstance(message, ResultMessage):
+            if isinstance(message, AssistantMessage):
+                texts = [b.text for b in message.content if isinstance(b, TextBlock)]
+                if texts:
+                    last_assistant_text = "\n".join(texts)
+            elif isinstance(message, ResultMessage):
                 if message.result:
                     result_text = message.result
     except Exception:
-        if not result_text:
+        if not result_text and not last_assistant_text:
             logger.exception("Task agent error")
             return "Task execution failed."
         logger.debug("Ignoring query cleanup error", exc_info=True)
 
-    return result_text or "Task completed."
+    return result_text or last_assistant_text or "Task completed."

@@ -92,14 +92,15 @@ async def _handle_message(update: Update, context) -> None:
     # Archive to conversations/ for long-term memory
     await archive_exchange(user_text, response, chat_id)
 
-    # Always send final response
-    for i in range(0, len(response), _TELEGRAM_MAX_LENGTH):
-        chunk = response[i : i + _TELEGRAM_MAX_LENGTH]
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=chunk,
-            reply_to_message_id=update.message.message_id,
-        )
+    # Send final response (skip if agent already sent via send_message tool)
+    if response:
+        for i in range(0, len(response), _TELEGRAM_MAX_LENGTH):
+            chunk = response[i : i + _TELEGRAM_MAX_LENGTH]
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                reply_to_message_id=update.message.message_id,
+            )
 
 
 async def _post_init(application: Application) -> None:
