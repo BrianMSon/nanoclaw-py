@@ -49,7 +49,7 @@ def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict[str, 
         elif stype == "interval":
             next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
         elif stype == "once":
-            next_run = svalue
+            next_run = datetime.fromisoformat(svalue).astimezone(timezone.utc).isoformat()
         else:
             return {
                 "content": [{"type": "text", "text": f"Unknown schedule_type: {stype}"}],
