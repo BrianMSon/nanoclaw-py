@@ -80,7 +80,6 @@ function getHost() { return location.host || 'localhost:8765'; }
 function connect() {
   const token = document.getElementById('token-input').value.trim();
   if (!token) return;
-  localStorage.setItem('ws_token', token);
   doConnect(token);
 }
 
@@ -185,9 +184,6 @@ function disconnect() {
   document.getElementById('auth').style.display = 'flex';
 }
 
-// Auto-connect with saved token
-const saved = localStorage.getItem('ws_token');
-if (saved) { document.getElementById('token-input').value = saved; doConnect(saved); }
 </script>
 </body>
 </html>
