@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from nanoclaw.bot import setup_bot
-from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, STORE_DIR, WORKSPACE_DIR
+from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, STORE_DIR, WORKSPACE_DIR, WS_PORT, WS_TOKEN
 from nanoclaw.db import init_db
 from nanoclaw.memory import ensure_workspace
 
@@ -82,10 +82,30 @@ async def _prepare_runtime() -> None:
     logger.info("Workspace ready at %s", WORKSPACE_DIR)
 
 
-def _run_bot(drop_pending: bool = False) -> None:
+async def _async_main(drop_pending: bool = False) -> None:
+    await _prepare_runtime()
+
+    # Telegram bot (non-blocking start)
     app = setup_bot()
-    logger.info("%s is starting...", ASSISTANT_NAME)
-    app.run_polling(drop_pending_updates=drop_pending)
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=drop_pending)
+
+    # WebSocket server (if configured)
+    ws_runner = None
+    if WS_TOKEN:
+        from nanoclaw.ws import start_ws_server
+        ws_runner = await start_ws_server(WS_PORT)
+
+    logger.info("%s is running...", ASSISTANT_NAME)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        if ws_runner:
+            await ws_runner.cleanup()
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
 
 def main() -> None:
@@ -95,8 +115,7 @@ def main() -> None:
         import time
         time.sleep(3)
     _acquire_lock()
-    asyncio.run(_prepare_runtime())
-    _run_bot(drop_pending=killed)
+    asyncio.run(_async_main(drop_pending=killed))
 
 
 if __name__ == "__main__":

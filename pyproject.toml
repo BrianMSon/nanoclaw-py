@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Personal AI Agent with Claude Code SDK and Telegram"
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.9",
     "aiosqlite>=0.22.1",
     "apscheduler>=3.10,<4.0",
     "claude-agent-sdk>=0.1.31",

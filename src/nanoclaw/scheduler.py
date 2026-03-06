@@ -56,7 +56,8 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
         result = await run_task_agent(wrapped_prompt, bot, task_chat_id, db_path, notify_state)
 
         # Fallback to avoid silent runs when the model forgets to call send_message.
-        if not notify_state["sent"]:
+        # Skip for WebSocket-originated tasks (chat_id=0) since bot is Telegram-only here.
+        if not notify_state["sent"] and task_chat_id != 0:
             await bot.send_message(chat_id=task_chat_id, text=f"⏰ 定时提醒：{prompt}")
 
         duration_ms = int((time.monotonic() - start) * 1000)

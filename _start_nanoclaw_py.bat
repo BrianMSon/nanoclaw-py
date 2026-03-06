@@ -16,5 +16,6 @@ if exist "data\nanoclaw.pid" (
 title nanoclaw-py [Ape]
 
 echo [nanoclaw] Starting...
+::uv run python -m nanoclaw
 nanoclaw.exe
 ::pause

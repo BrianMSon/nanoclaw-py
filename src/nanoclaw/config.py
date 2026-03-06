@@ -24,6 +24,9 @@ ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Ape")
 SCHEDULER_INTERVAL = int(os.getenv("SCHEDULER_INTERVAL", "60"))
 AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "300"))
 LOCAL_TZ = ZoneInfo(os.getenv("TZ", "Asia/Seoul"))
+WS_PORT = int(os.getenv("WS_PORT", "8765"))
+WS_BIND = os.getenv("WS_BIND", "127.0.0.1")  # 0.0.0.0 for external access
+WS_TOKEN = os.getenv("WS_TOKEN", "")  # empty = WS server disabled
 
 # Paths
 WORKSPACE_DIR = BASE_DIR / "workspace"
