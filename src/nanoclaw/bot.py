@@ -185,6 +185,8 @@ async def _handle_message(update: Update, context) -> None:
     # Archive to conversations/ for long-term memory
     await archive_exchange(user_text, response, chat_id)
 
+    logger.info("Response ready for: %s", update.message.text[:80])
+
     # Send final response (skip if agent already sent via send_message tool)
     if response:
         for i in range(0, len(response), _TELEGRAM_MAX_LENGTH):

@@ -57,6 +57,8 @@ async def _handle_chat(ws, text: str) -> None:
         if not ws.closed:
             await ws.send_json({"type": "typing", "active": False})
 
+    logger.info("Response ready for: %s", text[:80])
+
     await archive_exchange(text, response, chat_id=0)
 
     if response and not ws.closed:
