@@ -167,7 +167,10 @@ async def _handle_message(update: Update, context) -> None:
                     should_continue = await fut
 
                 if not should_continue:
-                    response = ""
+                    if notify_state.get("messages"):
+                        response = ""
+                    else:
+                        response = "⏱ Timed out. No results to show."
                     break
 
                 # Resume typing for next attempt
