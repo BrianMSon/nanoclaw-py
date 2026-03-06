@@ -42,7 +42,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 <div id="auth">
   <h2>Nanoclaw</h2>
-  <input type="password" id="token-input" placeholder="Token" />
+  <input type="password" id="token-input" placeholder="Token" onkeydown="if(event.key==='Enter')connect()" />
   <button onclick="connect()">Connect</button>
   <div class="error" id="auth-error"></div>
 </div>

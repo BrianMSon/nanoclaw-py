@@ -82,9 +82,11 @@ async def _handle_status(ws) -> None:
 async def _handle_ws(request):
     import aiohttp as _aiohttp
     from aiohttp import web
+    peer = request.remote
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     authenticated = False
+    logger.info("WS connected: %s", peer)
 
     async for msg in ws:
         if msg.type == _aiohttp.WSMsgType.TEXT:
@@ -100,8 +102,10 @@ async def _handle_ws(request):
                 if msg_type == "auth":
                     if data.get("token") == WS_TOKEN:
                         authenticated = True
+                        logger.info("WS authenticated: %s", peer)
                         await ws.send_json({"type": "auth_ok"})
                     else:
+                        logger.warning("WS auth failed: %s", peer)
                         await ws.send_json({"type": "auth_fail", "reason": "Invalid token"})
                 else:
                     await ws.send_json({"type": "auth_fail", "reason": "Not authenticated"})
@@ -110,6 +114,7 @@ async def _handle_ws(request):
             if msg_type == "message":
                 text = data.get("text", "").strip()
                 if text:
+                    logger.info("WS message from %s: %s", peer, text[:80])
                     await _handle_chat(ws, text)
             elif msg_type == "status":
                 await _handle_status(ws)
@@ -121,6 +126,7 @@ async def _handle_ws(request):
         elif msg.type in (_aiohttp.WSMsgType.ERROR, _aiohttp.WSMsgType.CLOSE):
             break
 
+    logger.info("WS disconnected: %s", peer)
     return ws
 
 
