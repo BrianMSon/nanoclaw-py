@@ -2,6 +2,7 @@
 setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
+::echo "%~dp0"
 
 :: Kill existing instance via PID file (tree kill)
 if exist "data\nanoclaw.pid" (
@@ -16,4 +17,4 @@ title nanoclaw-py [Ape]
 
 echo [nanoclaw] Starting...
 nanoclaw.exe
-pause
+::pause

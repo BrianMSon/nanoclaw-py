@@ -8,6 +8,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Mess
 from nanoclaw.agent import run_agent, clear_session_id
 from nanoclaw.conversations import archive_exchange, get_recent_history
 from nanoclaw.config import AGENT_TIMEOUT, ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
+from nanoclaw.rewriter import rewrite_on_timeout
 from nanoclaw.scheduler import setup_scheduler
 
 logger = logging.getLogger(__name__)
@@ -104,24 +105,11 @@ async def _handle_message(update: Update, context) -> None:
             if attempt == 1:
                 prompt = user_text
             else:
-                # Build context from previous attempt: sent messages + agent's work log
-                sections = []
-                if notify_state["messages"]:
-                    delivered = "\n\n---\n\n".join(notify_state["messages"])
-                    sections.append(f"<already_delivered>\n{delivered}\n</already_delivered>")
-                # Include agent's reasoning/work from previous attempt (last 3 substantive texts)
-                prev_texts = [t for t in progress.get("all_texts", []) if len(t) > 100]
-                if prev_texts:
-                    work_log = "\n\n---\n\n".join(prev_texts[-3:])
-                    sections.append(f"<previous_work>\n{work_log}\n</previous_work>")
-
-                context_block = "\n\n".join(sections)
-                prompt = (
-                    f"[System: Previous attempt timed out. "
-                    f"Review the context below and continue from where it left off. "
-                    f"Do NOT repeat already-delivered results or redo completed analysis.]\n\n"
-                    f"{context_block}\n\n"
-                    f"{user_text}"
+                prompt = await rewrite_on_timeout(
+                    original_prompt=user_text,
+                    work_done=progress.get("all_texts", []),
+                    messages_sent=notify_state.get("messages", []),
+                    attempt=attempt,
                 )
                 # Reset progress for new attempt (keep notify_state across attempts)
                 progress = {"last_text": "", "all_texts": []}
