@@ -158,7 +158,12 @@ function doConnect(token) {
   ws.onmessage = (e) => handleMsg(JSON.parse(e.data));
   ws.onclose = () => {
     if (document.getElementById('chat').style.display !== 'none') {
-      addDisconnectedMsg();
+      const hiddenBtn = document.querySelector('.reconnect-btn[style*="display: none"]');
+      if (hiddenBtn) {
+        hiddenBtn.style.display = '';
+      } else {
+        addDisconnectedMsg();
+      }
     }
   };
   ws.onerror = () => document.getElementById('auth-error').textContent = 'Connection failed';
@@ -172,8 +177,13 @@ function addDisconnectedMsg() {
   el.appendChild(txt);
   const btn = document.createElement('button');
   btn.className = 'reconnect-btn';
-  btn.textContent = '재접속';
-  btn.onclick = () => { if (lastToken) doConnect(lastToken); };
+  btn.textContent = 'Reconnect';
+  btn.onclick = () => {
+    if (lastToken) {
+      btn.style.display = 'none';
+      doConnect(lastToken);
+    }
+  };
   el.appendChild(btn);
   const msgs = document.getElementById('messages');
   msgs.appendChild(el);
@@ -187,7 +197,13 @@ function handleMsg(data) {
       document.getElementById('auth').style.display = 'none';
       document.getElementById('chat').style.display = 'flex';
       document.getElementById('msg-input').focus();
-      document.querySelectorAll('.reconnect-btn').forEach(b => b.remove());
+      document.querySelectorAll('.msg.disconnected').forEach(el => {
+        el.querySelector('.reconnect-btn')?.remove();
+        const rcMsg = document.createElement('div');
+        rcMsg.style.cssText = 'color: #2ecc71; font-size: 12px; margin-top: 2px;';
+        rcMsg.textContent = 'Reconnected.';
+        el.appendChild(rcMsg);
+      });
       break;
     case 'auth_fail':
       document.getElementById('auth-error').textContent = data.reason;
