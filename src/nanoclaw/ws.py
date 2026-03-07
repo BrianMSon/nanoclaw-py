@@ -1,5 +1,6 @@
 """WebSocket server for browser/terminal access to the agent."""
 
+import asyncio
 import json
 import logging
 import sys
@@ -21,12 +22,16 @@ else:
 class WsSink:
     """Duck-typed bot adapter that sends messages over WebSocket."""
 
-    def __init__(self, ws):
+    def __init__(self, ws, msg_id: str | None = None):
         self._ws = ws
+        self._msg_id = msg_id
 
     async def send_message(self, *, chat_id: int, text: str, **kwargs) -> None:
         if not self._ws.closed:
-            await self._ws.send_json({"type": "push", "text": text})
+            payload: dict = {"type": "push", "text": text}
+            if self._msg_id:
+                payload["msg_id"] = self._msg_id
+            await self._ws.send_json(payload)
 
 
 async def _handle_index(request):
@@ -37,13 +42,14 @@ async def _handle_index(request):
     return web.Response(text=index.read_text(encoding="utf-8"), content_type="text/html")
 
 
-async def _handle_chat(ws, text: str) -> None:
-    """Simplified version of bot._handle_message — no timeout retry."""
-    sink = WsSink(ws)
+async def _handle_chat(ws, text: str, msg_id: str) -> None:
+    """Process a chat message concurrently. Tagged with msg_id."""
+    sink = WsSink(ws, msg_id)
     history = get_recent_history(max_exchanges=10)
     notify_state: dict = {"sent": False, "messages": []}
 
-    await ws.send_json({"type": "typing", "active": True})
+    if not ws.closed:
+        await ws.send_json({"type": "typing", "active": True, "msg_id": msg_id})
     try:
         response = await run_agent(
             text, sink, 0, str(DB_PATH),
@@ -51,18 +57,19 @@ async def _handle_chat(ws, text: str) -> None:
         )
     except Exception:
         logger.exception("Agent error in WS chat")
-        await ws.send_json({"type": "error", "text": "Agent error occurred."})
+        if not ws.closed:
+            await ws.send_json({"type": "error", "text": "Agent error occurred.", "msg_id": msg_id})
         return
     finally:
         if not ws.closed:
-            await ws.send_json({"type": "typing", "active": False})
+            await ws.send_json({"type": "typing", "active": False, "msg_id": msg_id})
 
     logger.info("Response ready for: %s", text[:80])
 
     await archive_exchange(text, response, chat_id=0)
 
     if response and not ws.closed:
-        await ws.send_json({"type": "response", "text": response})
+        await ws.send_json({"type": "response", "text": response, "msg_id": msg_id})
 
 
 async def _handle_status(ws) -> None:
@@ -115,9 +122,10 @@ async def _handle_ws(request):
 
             if msg_type == "message":
                 text = data.get("text", "").strip()
+                msg_id = data.get("msg_id", "")
                 if text:
                     logger.info("WS message from %s: %s", peer, text[:80])
-                    await _handle_chat(ws, text)
+                    asyncio.create_task(_handle_chat(ws, text, msg_id))
             elif msg_type == "status":
                 await _handle_status(ws)
             elif msg_type == "clear":
