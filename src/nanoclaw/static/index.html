@@ -45,7 +45,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .msg.push { align-self: flex-start; background: #1a3a2a; border: 1px solid #2d5a3d; }
 .msg.error { align-self: center; background: #3a1a1a; border: 1px solid #5a2d2d; color: #e74c3c; }
 .msg.system { align-self: center; background: transparent; color: #666; font-size: 12px; }
-#typing { padding: 4px 16px; font-size: 12px; color: #aaa; min-height: 22px; }
+#typing { padding: 4px 16px; font-size: 12px; color: #f5c542; min-height: 22px; }
 .msg.disconnected { align-self: center; background: transparent; color: #e74c3c; font-size: 12px; font-weight: bold; }
 .msg.disconnected { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .reconnect-btn { padding: 6px 16px; border: 1px solid #e74c3c; border-radius: 4px; background: transparent; color: #e74c3c; cursor: pointer; font-size: 12px; font-weight: bold; transition: background 0.2s, color 0.2s; }
@@ -56,8 +56,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .msg.glow { animation: glow-fade 1.5s ease-out; }
 @keyframes flash-border { 0%,100% { border-color: transparent; } 50% { border-color: #4cd964; } }
 .msg.flash { animation: flash-border 0.6s ease 2; }
-#input-area { padding: 12px 16px; background: #16213e; border-top: 1px solid #333; display: flex; gap: 8px; }
-#input-area textarea { flex: 1; padding: 10px; border: 1px solid #444; border-radius: 6px; background: #1a1a2e; color: #e0e0e0; font-size: 14px; resize: none; height: 42px; font-family: inherit; }
+#input-split-bar { height: 6px; background: #2a2a5e; cursor: row-resize; flex-shrink: 0; transition: background 0.2s; position: relative; display: flex; align-items: center; justify-content: center; }
+#input-split-bar::after { content: ''; display: block; width: 24px; height: 3px; background: rgba(255,255,255,0.12); border-radius: 2px; transition: background 0.2s, width 0.2s; }
+#input-split-bar:hover, #input-split-bar.dragging { background: #0f3460; }
+#input-split-bar:hover::after, #input-split-bar.dragging::after { background: rgba(255,255,255,0.35); width: 36px; }
+#input-area { padding: 12px 16px; background: #16213e; border-top: 1px solid #333; display: flex; gap: 8px; min-height: 60px; }
+#input-area textarea { flex: 1; padding: 10px; border: 1px solid #444; border-radius: 6px; background: #1a1a2e; color: #e0e0e0; font-size: 14px; resize: none; height: 100%; font-family: inherit; }
 #input-area button { padding: 10px 20px; border: none; border-radius: 6px; background: #0f3460; color: #e0e0e0; cursor: pointer; font-size: 14px; }
 #input-area button:hover { background: #1a5276; }
 #input-area button:disabled { opacity: 0.5; cursor: default; }
@@ -94,7 +98,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <h1>Nanoclaw</h1>
     <div class="actions">
       <button id="btn-sound" onclick="toggleSound()" title="알림 사운드 on/off">🔔</button>
-      <button onclick="showStatus()" style="background:#3a2e00;color:#f5c542;border-color:#f5c542;">Schedule</button>
+      <button onclick="showStatus()">Schedule</button>
       <button onclick="clearSession()">Clear</button>
       <button onclick="disconnect()">Disconnect</button>
     </div>
@@ -103,6 +107,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div id="chat-main">
       <div id="messages"></div>
       <div id="typing"></div>
+      <div id="input-split-bar"></div>
       <div id="input-area">
         <textarea id="msg-input" placeholder="Type a message..." onkeydown="handleKey(event)"></textarea>
         <button id="send-btn" onclick="sendMessage()">Send</button>
@@ -225,14 +230,17 @@ function playNotifySound() {
   if (!soundEnabled) return;
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain); gain.connect(ctx.destination);
-    osc.frequency.value = 880;
     osc.type = 'sine';
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
-    osc.start(); osc.stop(ctx.currentTime + 0.15);
+    osc.frequency.setValueAtTime(1100, t);
+    osc.frequency.setValueAtTime(880, t + 0.1);
+    gain.gain.setValueAtTime(0.3, t);
+    gain.gain.setValueAtTime(0.3, t + 0.1);
+    gain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+    osc.start(t); osc.stop(t + 0.2);
   } catch(e) {}
 }
 
@@ -357,6 +365,34 @@ function disconnect() {
     document.getElementById('chat-main').style.flex = 'none';
     document.getElementById('chat-main').style.width = chatWidth + 'px';
     document.getElementById('sidebar').style.flex = '1';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    bar.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+// Input area split bar drag
+(function() {
+  const bar = document.getElementById('input-split-bar');
+  const inputArea = document.getElementById('input-area');
+  let dragging = false;
+  bar.addEventListener('mousedown', (e) => {
+    dragging = true;
+    bar.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const chatMain = document.getElementById('chat-main');
+    const rect = chatMain.getBoundingClientRect();
+    const inputHeight = Math.max(60, Math.min(rect.bottom - e.clientY, rect.height * 0.6));
+    inputArea.style.height = inputHeight + 'px';
   });
   document.addEventListener('mouseup', () => {
     if (!dragging) return;

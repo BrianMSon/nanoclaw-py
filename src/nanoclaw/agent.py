@@ -49,10 +49,13 @@ def _patch_message_parser():
 _patch_message_parser()
 
 
-def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict | None = None) -> list:
+def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict | None = None, reply_to_message_id: int | None = None) -> list:
     @tool("send_message", "Send a message to the user on Telegram", {"text": str})
     async def send_message(args: dict[str, Any]) -> dict[str, Any]:
-        await bot.send_message(chat_id=chat_id, text=args["text"])
+        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": args["text"]}
+        if reply_to_message_id is not None:
+            kwargs["reply_to_message_id"] = reply_to_message_id
+        await bot.send_message(**kwargs)
         if notify_state is not None:
             notify_state["sent"] = True
             notify_state.setdefault("messages", []).append(args["text"])
@@ -152,11 +155,12 @@ async def _make_prompt(text: str, history: str = "", timeout: int = AGENT_TIMEOU
 
 
 async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "",
-                    progress: dict | None = None, notify_state: dict | None = None) -> str:
+                    progress: dict | None = None, notify_state: dict | None = None,
+                    reply_to_message_id: int | None = None) -> str:
     """Returns response_text. If progress dict is passed, updates progress["last_text"] with latest assistant output."""
     if notify_state is None:
         notify_state = {"sent": False, "messages": []}
-    tools = _create_tools(bot, chat_id, db_path, notify_state)
+    tools = _create_tools(bot, chat_id, db_path, notify_state, reply_to_message_id=reply_to_message_id)
     mcp_server = create_sdk_mcp_server(name="nanoclaw", tools=tools)
 
     env = {"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY}

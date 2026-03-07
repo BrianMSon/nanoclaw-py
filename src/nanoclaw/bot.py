@@ -116,7 +116,8 @@ async def _handle_message(update: Update, context) -> None:
             try:
                 agent_task = asyncio.create_task(
                     run_agent(prompt, context.bot, chat_id, str(DB_PATH),
-                              history=history, notify_state=notify_state, progress=progress)
+                              history=history, notify_state=notify_state, progress=progress,
+                              reply_to_message_id=update.message.message_id)
                 )
                 done, _ = await asyncio.wait({agent_task}, timeout=_AGENT_TIMEOUT)
                 if done:
