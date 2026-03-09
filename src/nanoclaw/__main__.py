@@ -4,9 +4,10 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import datetime
 
 from nanoclaw.bot import setup_bot
-from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, STORE_DIR, WORKSPACE_DIR, WS_PORT, WS_TOKEN
+from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, LOCAL_TZ, STORE_DIR, WORKSPACE_DIR, WS_PORT, WS_TOKEN
 from nanoclaw.db import init_db
 from nanoclaw.memory import ensure_workspace
 
@@ -14,6 +15,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# Force log timestamps to LOCAL_TZ instead of system localtime (unreliable on MSYS/Windows)
+logging.Formatter.converter = lambda *args: datetime.now(LOCAL_TZ).timetuple()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)

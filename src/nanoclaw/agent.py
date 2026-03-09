@@ -198,6 +198,7 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
         permission_mode="bypassPermissions",
         mcp_servers={"nanoclaw": mcp_server},
         env=env,
+        max_buffer_size=10 * 1024 * 1024,  # 10MB
     )
 
     result_text = ""
@@ -268,6 +269,7 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
         permission_mode="bypassPermissions",
         mcp_servers={"nanoclaw": mcp_server},
         env=env,
+        max_buffer_size=10 * 1024 * 1024,  # 10MB
     )
 
     result_text = ""

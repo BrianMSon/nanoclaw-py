@@ -2,10 +2,10 @@
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from nanoclaw.config import WORKSPACE_DIR
+from nanoclaw.config import LOCAL_TZ, WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def ensure_conversations_dir() -> None:
 
 def _get_today_file() -> Path:
     """Get the conversation file for today."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     return CONVERSATIONS_DIR / f"{today}.md"
 
 
@@ -40,7 +40,7 @@ def get_recent_history(max_exchanges: int = 10) -> str:
     if not CONVERSATIONS_DIR.exists():
         return ""
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(LOCAL_TZ)
     exchanges: list[tuple[str, str]] = []
 
     # Check today and yesterday
@@ -72,7 +72,7 @@ async def archive_exchange(user_message: str, assistant_response: str, chat_id: 
     """Archive a single user-assistant exchange to today's conversation file.
 
     Format:
-    ## HH:MM:SS UTC
+    ## HH:MM:SS LOCAL_TZ
 
     **User**: <message>
 
@@ -83,7 +83,7 @@ async def archive_exchange(user_message: str, assistant_response: str, chat_id: 
     ensure_conversations_dir()
 
     filepath = _get_today_file()
-    timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    timestamp = datetime.now(LOCAL_TZ).strftime("%H:%M:%S %Z")
 
     # Build the exchange entry
     entry = f"""## {timestamp}
@@ -102,7 +102,7 @@ async def archive_exchange(user_message: str, assistant_response: str, chat_id: 
             content = filepath.read_text(encoding="utf-8")
         else:
             # Create file with header
-            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            date_str = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
             content = f"# Conversations - {date_str}\n\n"
 
         content += entry

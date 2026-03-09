@@ -1,9 +1,10 @@
-from nanoclaw.config import ASSISTANT_NAME, WORKSPACE_DIR
+from nanoclaw.config import ASSISTANT_NAME, LOCAL_TZ, WORKSPACE_DIR
 from nanoclaw.conversations import ensure_conversations_dir
 
 _INITIAL_CLAUDE_MD = f"""# {ASSISTANT_NAME} - Personal AI Assistant
 
 You are {ASSISTANT_NAME}, a personal AI assistant running on Telegram.
+The user's timezone is {LOCAL_TZ} (UTC+9). All times in conversations and schedules use this timezone.
 
 ## Your Capabilities
 - You can read, write, and edit files in your workspace
