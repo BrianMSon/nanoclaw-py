@@ -2,9 +2,9 @@ import asyncio
 import base64
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from nanoclaw.agent import run_agent, clear_session_id, set_telegram_bot
 from nanoclaw.conversations import archive_exchange, get_recent_history
@@ -14,12 +14,11 @@ from nanoclaw.rewriter import rewrite_on_timeout
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_MAX_LENGTH = 4096
-_continue_futures: dict[int, asyncio.Future] = {}  # chat_id -> Future[bool]
 _auto_continue: dict[int, int] = {}  # chat_id -> remaining auto-retries
 _AGENT_TIMEOUT = AGENT_TIMEOUT
 _MAX_AUTO_RETRIES = 3
 _TYPING_INTERVAL = 4  # seconds — Telegram typing status lasts ~5s
-_PROGRESS_INTERVAL = 30  # seconds — send progress update if agent is silent
+_PROGRESS_INTERVAL = 60  # seconds — send progress update if agent is silent
 
 # Track active tasks per chat: {chat_id: "description of current task"}
 _active_tasks: dict[int, str] = {}
@@ -89,19 +88,6 @@ async def _report_progress(bot, chat_id: int, stop: asyncio.Event,
             except Exception:
                 pass
 
-
-async def _handle_continue(update: Update, context) -> None:
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-    labels = {"continue_yes": "Continued ▶", "continue_no": "Stopped ■", "continue_auto": "Auto-continued ▶▶"}
-    chosen = labels.get(query.data, query.data)
-    await query.edit_message_text(f"{query.message.text}\n\n→ {chosen}")
-    if query.data == "continue_auto":
-        _auto_continue[chat_id] = _MAX_AUTO_RETRIES
-    fut = _continue_futures.pop(chat_id, None)
-    if fut and not fut.done():
-        fut.set_result(query.data in ("continue_yes", "continue_auto"))
 
 
 async def _handle_message(update: Update, context) -> None:
@@ -201,31 +187,17 @@ async def _handle_message(update: Update, context) -> None:
                 await typing_task
                 await progress_task
 
-                # Check auto-continue
+                # Auto-continue without asking
                 remaining = _auto_continue.get(chat_id, 0)
-                if remaining > 0:
-                    _auto_continue[chat_id] = remaining - 1
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"⏱ Timed out (attempt {attempt}) — \"{user_text[:50]}\" — auto-retrying ({remaining} left)...",
-                    )
-                    should_continue = True
-                else:
-                    _auto_continue.pop(chat_id, None)
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Continue", callback_data="continue_yes"),
-                         InlineKeyboardButton("Don't ask", callback_data="continue_auto"),
-                         InlineKeyboardButton("Stop", callback_data="continue_no")],
-                    ])
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"⏱ Timed out (attempt {attempt}) — \"{user_text[:50]}\" — retry?",
-                        reply_markup=keyboard,
-                    )
-
-                    fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-                    _continue_futures[chat_id] = fut
-                    should_continue = await fut
+                if remaining <= 0:
+                    _auto_continue[chat_id] = _MAX_AUTO_RETRIES
+                    remaining = _MAX_AUTO_RETRIES
+                _auto_continue[chat_id] = remaining - 1
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⏱ Timed out (attempt {attempt}) — \"{user_text[:50]}\" — auto-retrying ({remaining} left)...",
+                )
+                should_continue = True
 
                 if not should_continue:
                     if notify_state.get("messages"):
@@ -269,6 +241,5 @@ def setup_bot() -> Application:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("clear", _clear))
-    app.add_handler(CallbackQueryHandler(_handle_continue, pattern="^continue_"))
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, _handle_message))
     return app
