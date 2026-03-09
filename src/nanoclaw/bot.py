@@ -20,6 +20,7 @@ _auto_continue: dict[int, int] = {}  # chat_id -> remaining auto-retries
 _AGENT_TIMEOUT = AGENT_TIMEOUT
 _MAX_AUTO_RETRIES = 3
 _TYPING_INTERVAL = 4  # seconds — Telegram typing status lasts ~5s
+_PROGRESS_INTERVAL = 30  # seconds — send progress update if agent is silent
 
 # Track active tasks per chat: {chat_id: "description of current task"}
 _active_tasks: dict[int, str] = {}
@@ -58,6 +59,36 @@ async def _keep_typing(bot, chat_id: int, stop: asyncio.Event) -> None:
             break
         except asyncio.TimeoutError:
             pass
+
+
+async def _report_progress(bot, chat_id: int, stop: asyncio.Event,
+                           progress: dict, notify_state: dict) -> None:
+    """Periodically send progress updates when agent is silent for too long."""
+    last_reported = ""
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_PROGRESS_INTERVAL)
+            break
+        except asyncio.TimeoutError:
+            pass
+        # Skip if agent already sent a message to the user recently
+        if notify_state.get("sent"):
+            continue
+        current = progress.get("last_text", "")
+        if current and current != last_reported:
+            preview = current[:200].strip()
+            if len(current) > 200:
+                preview += "..."
+            try:
+                await bot.send_message(chat_id=chat_id, text=f"⏳ 진행중:\n{preview}")
+            except Exception:
+                pass
+            last_reported = current
+        elif not current:
+            try:
+                await bot.send_message(chat_id=chat_id, text="⏳ 처리 중...")
+            except Exception:
+                pass
 
 
 async def _handle_continue(update: Update, context) -> None:
@@ -111,6 +142,7 @@ async def _handle_message(update: Update, context) -> None:
     _active_tasks[chat_id] = user_text[:60]
 
     stop_typing = asyncio.Event()
+    stop_progress = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id, stop_typing))
 
     # Short messages likely don't need much context; longer ones may reference past conversation
@@ -120,6 +152,9 @@ async def _handle_message(update: Update, context) -> None:
     response = ""
     notify_state: dict = {"sent": False, "messages": []}
     progress: dict = {"last_text": "", "all_texts": []}
+    progress_task = asyncio.create_task(
+        _report_progress(context.bot, chat_id, stop_progress, progress, notify_state)
+    )
 
     attempt = 0
     try:
@@ -163,7 +198,9 @@ async def _handle_message(update: Update, context) -> None:
             except asyncio.TimeoutError:
                 logger.warning("Agent timed out (attempt %d) for: %s", attempt, user_text[:100])
                 stop_typing.set()
+                stop_progress.set()
                 await typing_task
+                await progress_task
 
                 # Check auto-continue
                 remaining = _auto_continue.get(chat_id, 0)
@@ -198,14 +235,20 @@ async def _handle_message(update: Update, context) -> None:
                         response = "⏱ Timed out. No results to show."
                     break
 
-                # Resume typing for next attempt
+                # Resume typing and progress reporting for next attempt
                 stop_typing = asyncio.Event()
+                stop_progress = asyncio.Event()
                 typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id, stop_typing))
+                progress_task = asyncio.create_task(
+                    _report_progress(context.bot, chat_id, stop_progress, progress, notify_state)
+                )
     finally:
         _active_tasks.pop(chat_id, None)
         _auto_continue.pop(chat_id, None)
         stop_typing.set()
+        stop_progress.set()
         await typing_task
+        await progress_task
 
     # Archive to conversations/ for long-term memory
     await archive_exchange(user_text, response, chat_id)
