@@ -111,8 +111,18 @@ async def _handle_message(update: Update, context) -> None:
                 "data": base64.b64encode(bytes(data)).decode(),
             },
         })
+        # Save image to workspace so the agent can process it with tools
+        from nanoclaw.config import WORKSPACE_DIR
+        uploads_dir = WORKSPACE_DIR / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        img_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{photo.file_id[:8]}.jpg"
+        img_path = uploads_dir / img_filename
+        img_path.write_bytes(bytes(data))
+        img_path_str = str(img_path.resolve())
         if not user_text:
             user_text = "(사진)"
+        user_text += f"\n\n[이미지 파일 경로: {img_path_str}]"
 
     if not user_text and not images:
         return
