@@ -70,21 +70,14 @@ def setup_scheduler(bot, db_path: str) -> AsyncIOScheduler:
 
 async def _check_tasks(bot, db_path: str) -> None:
     now_utc = datetime.now(timezone.utc)
-    logger.info("[TICK] Scheduler tick at %s (UTC)", now_utc.isoformat())
     try:
         tasks = await db.get_due_tasks(db_path)
     except Exception:
-        logger.exception("[TICK] Failed to query due tasks")
+        logger.exception("Failed to query due tasks")
         return
 
     if not tasks:
-        logger.info("[TICK] No due tasks found")
         return
-
-    for t in tasks:
-        logger.info("[TICK] Due task: id=%s type=%s next_run=%s status=%s prompt=%s",
-                     t["id"], t["schedule_type"], t["next_run"], t["status"], t["prompt"][:60])
-    logger.info("[TICK] Found %d due task(s): %s", len(tasks), [t["id"] for t in tasks])
 
     # Execute tasks concurrently (with timeout per task already in _execute_task)
     async def _safe_execute(task):

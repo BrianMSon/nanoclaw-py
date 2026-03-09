@@ -81,6 +81,14 @@ async def _handle_index(request):
     return web.Response(text=index.read_text(encoding="utf-8"), content_type="text/html")
 
 
+async def _handle_favicon(request):
+    from aiohttp import web
+    ico = _STATIC_DIR / "nanoclaw.ico"
+    if not ico.exists():
+        return web.Response(status=404)
+    return web.Response(body=ico.read_bytes(), content_type="image/x-icon")
+
+
 async def _handle_chat(ws, text: str, msg_id: str) -> None:
     """Process a chat message concurrently. Tagged with msg_id."""
     sink = WsSink(ws, msg_id)
@@ -194,6 +202,7 @@ async def start_ws_server(port: int):
 
     app = web.Application()
     app.router.add_get("/", _handle_index)
+    app.router.add_get("/favicon.ico", _handle_favicon)
     app.router.add_get("/ws", _handle_ws)
 
     runner = web.AppRunner(app)
