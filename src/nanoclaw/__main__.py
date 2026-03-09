@@ -11,9 +11,15 @@ from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, LOCAL_TZ, OWNER_I
 from nanoclaw.db import init_db
 from nanoclaw.memory import ensure_workspace
 
+_LOG_FILE = DATA_DIR / "nanoclaw.log"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(str(_LOG_FILE), encoding="utf-8"),
+    ],
 )
 # Force log timestamps to LOCAL_TZ instead of system localtime (unreliable on MSYS/Windows)
 logging.Formatter.converter = lambda *args: datetime.now(LOCAL_TZ).timetuple()
@@ -97,6 +103,15 @@ async def _async_main(drop_pending: bool = False) -> None:
     # Store Telegram bot reference so web chat send_message routes to Telegram
     from nanoclaw.agent import set_telegram_bot
     set_telegram_bot(app.bot, OWNER_ID)
+
+    # Scheduler (moved from post_init to ensure it runs in the main event loop)
+    from nanoclaw.scheduler import setup_scheduler, _catchup_stale_tasks
+    logger.info("[INIT] Starting scheduler catchup...")
+    await _catchup_stale_tasks(str(DB_PATH))
+    logger.info("[INIT] Catchup done, setting up scheduler")
+    scheduler = setup_scheduler(app.bot, str(DB_PATH))
+    scheduler.start()
+    logger.info("[INIT] Scheduler started (running=%s)", scheduler.running)
 
     # WebSocket server (if configured)
     ws_runner = None

@@ -4,10 +4,13 @@ Note: Message history is stored in conversations/ folder (not in DB).
 The DB is only used for structured data that needs querying (scheduled tasks).
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 _CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -68,14 +71,28 @@ async def get_all_tasks(db_path: str) -> list[dict]:
 
 async def get_due_tasks(db_path: str) -> list[dict]:
     now = datetime.now(timezone.utc).isoformat()
+    logger.info("[DB] get_due_tasks: querying WHERE status='active' AND next_run <= %s", now)
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
+        # Also log all active tasks for debugging
+        cursor = await db.execute(
+            "SELECT id, status, next_run, schedule_type, prompt FROM scheduled_tasks WHERE status = 'active'",
+        )
+        all_active = await cursor.fetchall()
+        for row in all_active:
+            r = dict(row)
+            due = "DUE" if r["next_run"] and r["next_run"] <= now else "not yet"
+            logger.info("[DB] Active task: id=%s next_run=%s type=%s [%s] prompt=%s",
+                         r["id"], r["next_run"], r["schedule_type"], due, r["prompt"][:50])
+
         cursor = await db.execute(
             "SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run <= ?",
             (now,),
         )
         rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+        logger.info("[DB] get_due_tasks: returning %d task(s)", len(result))
+        return result
 
 
 async def update_task_status(db_path: str, task_id: str, status: str) -> bool:

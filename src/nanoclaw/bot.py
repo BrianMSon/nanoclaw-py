@@ -10,7 +10,6 @@ from nanoclaw.agent import run_agent, clear_session_id, set_telegram_bot
 from nanoclaw.conversations import archive_exchange, get_recent_history
 from nanoclaw.config import AGENT_TIMEOUT, ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
 from nanoclaw.rewriter import rewrite_on_timeout
-from nanoclaw.scheduler import setup_scheduler, _catchup_stale_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -266,15 +265,8 @@ async def _handle_message(update: Update, context) -> None:
             )
 
 
-async def _post_init(application: Application) -> None:
-    await _catchup_stale_tasks(str(DB_PATH))
-    scheduler = setup_scheduler(application.bot, str(DB_PATH))
-    scheduler.start()
-    logger.info("Scheduler started")
-
-
 def setup_bot() -> Application:
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).concurrent_updates(True).post_init(_post_init).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("clear", _clear))
     app.add_handler(CallbackQueryHandler(_handle_continue, pattern="^continue_"))
