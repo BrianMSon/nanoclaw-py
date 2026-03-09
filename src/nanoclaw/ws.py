@@ -13,6 +13,45 @@ from nanoclaw.conversations import archive_exchange, get_recent_history
 
 logger = logging.getLogger(__name__)
 
+_PROGRESS_INTERVAL = 30  # seconds — match bot.py
+
+
+async def _ws_report_progress(ws, msg_id: str, stop: asyncio.Event,
+                              progress: dict, notify_state: dict) -> None:
+    """Periodically send progress updates over WebSocket."""
+    last_reported = ""
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_PROGRESS_INTERVAL)
+            break
+        except asyncio.TimeoutError:
+            pass
+        if ws.closed:
+            break
+        if notify_state.get("sent"):
+            continue
+        current = progress.get("last_text", "")
+        if current and current != last_reported:
+            preview = current[:200].strip()
+            if len(current) > 200:
+                preview += "..."
+            try:
+                payload: dict = {"type": "push", "text": f"⏳ 진행중:\n{preview}"}
+                if msg_id:
+                    payload["msg_id"] = msg_id
+                await ws.send_json(payload)
+            except Exception:
+                pass
+            last_reported = current
+        elif not current:
+            try:
+                payload = {"type": "push", "text": "⏳ 처리 중..."}
+                if msg_id:
+                    payload["msg_id"] = msg_id
+                await ws.send_json(payload)
+            except Exception:
+                pass
+
 if getattr(sys, "frozen", False):
     _STATIC_DIR = Path(sys._MEIPASS) / "nanoclaw" / "static"
 else:
@@ -47,13 +86,20 @@ async def _handle_chat(ws, text: str, msg_id: str) -> None:
     sink = WsSink(ws, msg_id)
     history = get_recent_history(max_exchanges=10)
     notify_state: dict = {"sent": False, "messages": []}
+    progress: dict = {"last_text": "", "all_texts": []}
+    stop_progress = asyncio.Event()
 
     if not ws.closed:
         await ws.send_json({"type": "typing", "active": True, "msg_id": msg_id})
+
+    progress_task = asyncio.create_task(
+        _ws_report_progress(ws, msg_id, stop_progress, progress, notify_state)
+    )
     try:
         response = await run_agent(
             text, sink, 0, str(DB_PATH),
             history=history, notify_state=notify_state,
+            progress=progress,
         )
     except Exception:
         logger.exception("Agent error in WS chat")
@@ -61,6 +107,8 @@ async def _handle_chat(ws, text: str, msg_id: str) -> None:
             await ws.send_json({"type": "error", "text": "Agent error occurred.", "msg_id": msg_id})
         return
     finally:
+        stop_progress.set()
+        progress_task.cancel()
         if not ws.closed:
             await ws.send_json({"type": "typing", "active": False, "msg_id": msg_id})
 

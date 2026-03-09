@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 
 from nanoclaw.bot import setup_bot
-from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, LOCAL_TZ, STORE_DIR, WORKSPACE_DIR, WS_PORT, WS_TOKEN
+from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, LOCAL_TZ, OWNER_ID, STORE_DIR, WORKSPACE_DIR, WS_PORT, WS_TOKEN
 from nanoclaw.db import init_db
 from nanoclaw.memory import ensure_workspace
 
@@ -93,6 +93,10 @@ async def _async_main(drop_pending: bool = False) -> None:
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=drop_pending)
+
+    # Store Telegram bot reference so web chat send_message routes to Telegram
+    from nanoclaw.agent import set_telegram_bot
+    set_telegram_bot(app.bot, OWNER_ID)
 
     # WebSocket server (if configured)
     ws_runner = None

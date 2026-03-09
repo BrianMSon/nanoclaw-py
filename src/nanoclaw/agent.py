@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 
 _MAX_TURNS = 30
 
+# Telegram bot reference for cross-channel send_message
+_telegram_bot: Any = None
+_telegram_chat_id: int = 0
+
+
+def set_telegram_bot(bot: Any, chat_id: int) -> None:
+    """Store Telegram bot reference so send_message always reaches Telegram."""
+    global _telegram_bot, _telegram_chat_id
+    _telegram_bot = bot
+    _telegram_chat_id = chat_id
+
 # Patch SDK to ignore unknown message types (e.g. rate_limit_event) instead of crashing
 def _patch_message_parser():
     try:
@@ -52,10 +63,14 @@ _patch_message_parser()
 def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict | None = None, reply_to_message_id: int | None = None) -> list:
     @tool("send_message", "Send a message to the user on Telegram", {"text": str})
     async def send_message(args: dict[str, Any]) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": args["text"]}
-        if reply_to_message_id is not None:
-            kwargs["reply_to_message_id"] = reply_to_message_id
-        await bot.send_message(**kwargs)
+        # Always send to Telegram, even when called from web chat
+        if chat_id == 0 and _telegram_bot is not None:
+            await _telegram_bot.send_message(chat_id=_telegram_chat_id, text=args["text"])
+        else:
+            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": args["text"]}
+            if reply_to_message_id is not None:
+                kwargs["reply_to_message_id"] = reply_to_message_id
+            await bot.send_message(**kwargs)
         if notify_state is not None:
             notify_state["sent"] = True
             notify_state.setdefault("messages", []).append(args["text"])

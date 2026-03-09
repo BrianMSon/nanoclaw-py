@@ -6,11 +6,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
-from nanoclaw.agent import run_agent, clear_session_id
+from nanoclaw.agent import run_agent, clear_session_id, set_telegram_bot
 from nanoclaw.conversations import archive_exchange, get_recent_history
 from nanoclaw.config import AGENT_TIMEOUT, ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
 from nanoclaw.rewriter import rewrite_on_timeout
-from nanoclaw.scheduler import setup_scheduler
+from nanoclaw.scheduler import setup_scheduler, _catchup_stale_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +267,7 @@ async def _handle_message(update: Update, context) -> None:
 
 
 async def _post_init(application: Application) -> None:
+    await _catchup_stale_tasks(str(DB_PATH))
     scheduler = setup_scheduler(application.bot, str(DB_PATH))
     scheduler.start()
     logger.info("Scheduler started")
