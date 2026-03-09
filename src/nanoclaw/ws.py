@@ -13,7 +13,7 @@ from nanoclaw.conversations import archive_exchange, get_recent_history
 
 logger = logging.getLogger(__name__)
 
-_PROGRESS_INTERVAL = 30  # seconds — match bot.py
+_PROGRESS_INTERVAL = 60  # seconds — match bot.py
 
 
 async def _ws_report_progress(ws, msg_id: str, stop: asyncio.Event,
