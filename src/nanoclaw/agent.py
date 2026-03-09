@@ -63,14 +63,10 @@ _patch_message_parser()
 def _create_tools(bot: Any, chat_id: int, db_path: str, notify_state: dict | None = None, reply_to_message_id: int | None = None) -> list:
     @tool("send_message", "Send a message to the user on Telegram", {"text": str})
     async def send_message(args: dict[str, Any]) -> dict[str, Any]:
-        # Always send to Telegram, even when called from web chat
-        if chat_id == 0 and _telegram_bot is not None:
-            await _telegram_bot.send_message(chat_id=_telegram_chat_id, text=args["text"])
-        else:
-            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": args["text"]}
-            if reply_to_message_id is not None:
-                kwargs["reply_to_message_id"] = reply_to_message_id
-            await bot.send_message(**kwargs)
+        kwargs: dict[str, Any] = {"chat_id": chat_id or _telegram_chat_id, "text": args["text"]}
+        if reply_to_message_id is not None:
+            kwargs["reply_to_message_id"] = reply_to_message_id
+        await bot.send_message(**kwargs)
         if notify_state is not None:
             notify_state["sent"] = True
             notify_state.setdefault("messages", []).append(args["text"])
