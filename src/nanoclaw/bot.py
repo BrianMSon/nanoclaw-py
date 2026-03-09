@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -74,24 +75,46 @@ async def _handle_continue(update: Update, context) -> None:
 
 
 async def _handle_message(update: Update, context) -> None:
-    if not _is_owner(update) or not update.message or not update.message.text:
+    if not _is_owner(update) or not update.message:
+        return
+
+    # Extract text and optional photo
+    user_text = update.message.text or update.message.caption or ""
+    images: list[dict] = []
+
+    if update.message.photo:
+        # Get the largest photo (last in the list)
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        data = await file.download_as_bytearray()
+        images.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": base64.b64encode(bytes(data)).decode(),
+            },
+        })
+        if not user_text:
+            user_text = "(사진)"
+
+    if not user_text and not images:
         return
 
     chat_id = update.effective_chat.id
-    user_text = update.message.text
 
     # Inject active task info into prompt so the agent is aware
     active = _active_tasks.get(chat_id)
     if active:
         user_text = f"[System: Another task is running in parallel — \"{active}\"]\n\n{user_text}"
 
-    _active_tasks[chat_id] = update.message.text[:60]
+    _active_tasks[chat_id] = user_text[:60]
 
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id, stop_typing))
 
     # Short messages likely don't need much context; longer ones may reference past conversation
-    history_size = 3 if len(update.message.text) < 30 else 10
+    history_size = 3 if len(user_text) < 30 else 10
     history = get_recent_history(max_exchanges=history_size)
 
     response = ""
@@ -117,7 +140,8 @@ async def _handle_message(update: Update, context) -> None:
                 agent_task = asyncio.create_task(
                     run_agent(prompt, context.bot, chat_id, str(DB_PATH),
                               history=history, notify_state=notify_state, progress=progress,
-                              reply_to_message_id=update.message.message_id)
+                              reply_to_message_id=update.message.message_id,
+                              images=images)
                 )
                 done, _ = await asyncio.wait({agent_task}, timeout=_AGENT_TIMEOUT)
                 if done:
@@ -147,7 +171,7 @@ async def _handle_message(update: Update, context) -> None:
                     _auto_continue[chat_id] = remaining - 1
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"⏱ Timed out (attempt {attempt}) — \"{update.message.text[:50]}\" — auto-retrying ({remaining} left)...",
+                        text=f"⏱ Timed out (attempt {attempt}) — \"{user_text[:50]}\" — auto-retrying ({remaining} left)...",
                     )
                     should_continue = True
                 else:
@@ -159,7 +183,7 @@ async def _handle_message(update: Update, context) -> None:
                     ])
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"⏱ Timed out (attempt {attempt}) — \"{update.message.text[:50]}\" — retry?",
+                        text=f"⏱ Timed out (attempt {attempt}) — \"{user_text[:50]}\" — retry?",
                         reply_markup=keyboard,
                     )
 
@@ -186,7 +210,7 @@ async def _handle_message(update: Update, context) -> None:
     # Archive to conversations/ for long-term memory
     await archive_exchange(user_text, response, chat_id)
 
-    logger.info("Response ready for: %s", update.message.text[:80])
+    logger.info("Response ready for: %s", user_text[:80])
 
     # Send final response (skip if agent already sent via send_message tool)
     if response:
@@ -210,5 +234,5 @@ def setup_bot() -> Application:
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("clear", _clear))
     app.add_handler(CallbackQueryHandler(_handle_continue, pattern="^continue_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, _handle_message))
     return app

@@ -140,7 +140,8 @@ def clear_session_id() -> None:
         STATE_FILE.unlink()
 
 
-async def _make_prompt(text: str, history: str = "", timeout: int = AGENT_TIMEOUT) -> AsyncGenerator[dict, None]:
+async def _make_prompt(text: str, history: str = "", timeout: int = AGENT_TIMEOUT,
+                       images: list[dict] | None = None) -> AsyncGenerator[dict, None]:
     """Create async generator prompt with conversation history for context continuity."""
     time_notice = (
         f"[System: Time limit {timeout}s. "
@@ -148,15 +149,22 @@ async def _make_prompt(text: str, history: str = "", timeout: int = AGENT_TIMEOU
         f"before time runs out. Deliver results incrementally.]\n\n"
     )
     if history:
-        content = f"{time_notice}<conversation_history>\n{history}\n</conversation_history>\n\n{text}"
+        text_content = f"{time_notice}<conversation_history>\n{history}\n</conversation_history>\n\n{text}"
     else:
-        content = f"{time_notice}{text}"
+        text_content = f"{time_notice}{text}"
+
+    if images:
+        content: list[dict] = list(images) + [{"type": "text", "text": text_content}]
+    else:
+        content = text_content
+
     yield {"type": "user", "message": {"role": "user", "content": content}}
 
 
 async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: str = "",
                     progress: dict | None = None, notify_state: dict | None = None,
-                    reply_to_message_id: int | None = None) -> str:
+                    reply_to_message_id: int | None = None,
+                    images: list[dict] | None = None) -> str:
     """Returns response_text. If progress dict is passed, updates progress["last_text"] with latest assistant output."""
     if notify_state is None:
         notify_state = {"sent": False, "messages": []}
@@ -201,7 +209,7 @@ async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str, history: 
         progress["all_texts"] = all_assistant_texts
 
     try:
-        async for message in query(prompt=_make_prompt(prompt, history), options=options):
+        async for message in query(prompt=_make_prompt(prompt, history, images=images), options=options):
             if isinstance(message, AssistantMessage):
                 turn_count += 1
                 texts = [b.text for b in message.content if isinstance(b, TextBlock)]

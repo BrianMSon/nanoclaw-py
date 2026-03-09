@@ -27,6 +27,8 @@ LOCAL_TZ = ZoneInfo(os.getenv("TZ", "Asia/Seoul"))
 WS_PORT = int(os.getenv("WS_PORT", "8765"))
 WS_BIND = os.getenv("WS_BIND", "127.0.0.1")  # 0.0.0.0 for external access
 WS_TOKEN = os.getenv("WS_TOKEN", "")  # empty = WS server disabled
+if WS_TOKEN and len(WS_TOKEN) < 10:
+    raise ValueError("WS_TOKEN must be at least 10 characters long")
 
 # Paths
 WORKSPACE_DIR = BASE_DIR / "workspace"
