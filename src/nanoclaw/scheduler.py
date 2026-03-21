@@ -13,6 +13,7 @@ from nanoclaw.config import AGENT_TIMEOUT, LOCAL_TZ, SCHEDULER_INTERVAL
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
+_exec_lock = asyncio.Lock()
 
 
 async def _catchup_stale_tasks(db_path: str) -> None:
@@ -79,14 +80,13 @@ async def _check_tasks(bot, db_path: str) -> None:
     if not tasks:
         return
 
-    # Execute tasks concurrently (with timeout per task already in _execute_task)
-    async def _safe_execute(task):
-        try:
-            await _execute_task(task, bot, db_path)
-        except Exception:
-            logger.exception("Failed to execute task %s", task["id"])
-
-    await asyncio.gather(*[_safe_execute(t) for t in tasks])
+    # Execute tasks sequentially — wait for running task to finish before starting next
+    async with _exec_lock:
+        for task in tasks:
+            try:
+                await _execute_task(task, bot, db_path)
+            except Exception:
+                logger.exception("Failed to execute task %s", task["id"])
 
 
 async def _execute_task(task: dict, bot, db_path: str) -> None:
@@ -112,8 +112,8 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
         else:
             agent_task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(agent_task), timeout=5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                await agent_task
+            except (asyncio.CancelledError, Exception):
                 pass
             result = "Task timed out"
             logger.warning("Scheduled task %s timed out after %ds", task_id, AGENT_TIMEOUT)

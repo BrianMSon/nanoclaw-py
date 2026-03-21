@@ -8,7 +8,7 @@ from pathlib import Path
 
 from nanoclaw import db
 from nanoclaw.agent import run_agent, clear_session_id
-from nanoclaw.config import DB_PATH, WS_TOKEN
+from nanoclaw.config import AGENT_TIMEOUT, DB_PATH, WS_TOKEN
 from nanoclaw.conversations import archive_exchange, get_recent_history
 
 logger = logging.getLogger(__name__)
@@ -104,11 +104,24 @@ async def _handle_chat(ws, text: str, msg_id: str) -> None:
         _ws_report_progress(ws, msg_id, stop_progress, progress, notify_state)
     )
     try:
-        response = await run_agent(
-            text, sink, 0, str(DB_PATH),
-            history=history, notify_state=notify_state,
-            progress=progress,
+        agent_task = asyncio.create_task(
+            run_agent(
+                text, sink, 0, str(DB_PATH),
+                history=history, notify_state=notify_state,
+                progress=progress,
+            )
         )
+        done, _ = await asyncio.wait({agent_task}, timeout=AGENT_TIMEOUT)
+        if done:
+            response = agent_task.result()
+        else:
+            agent_task.cancel()
+            try:
+                await agent_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            response = "⏱ Timed out."
+            logger.warning("WS agent timed out after %ds for: %s", AGENT_TIMEOUT, text[:80])
     except Exception:
         logger.exception("Agent error in WS chat")
         if not ws.closed:
@@ -128,6 +141,17 @@ async def _handle_chat(ws, text: str, msg_id: str) -> None:
         await ws.send_json({"type": "response", "text": response, "msg_id": msg_id})
 
 
+async def _handle_toggle_status(ws, task_id: str) -> None:
+    tasks = await db.get_all_tasks(str(DB_PATH))
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        await ws.send_json({"type": "error", "text": f"Task {task_id} not found."})
+        return
+    new_status = "paused" if task["status"] == "active" else "active"
+    await db.update_task_status(str(DB_PATH), task_id, new_status)
+    await _handle_status(ws)
+
+
 async def _handle_status(ws) -> None:
     tasks = await db.get_all_tasks(str(DB_PATH))
     data = [
@@ -138,6 +162,7 @@ async def _handle_status(ws) -> None:
             "schedule_type": t["schedule_type"],
             "schedule_value": t["schedule_value"],
             "next_run": t.get("next_run", ""),
+            "last_run": t.get("last_run", ""),
         }
         for t in tasks
     ]
@@ -184,6 +209,10 @@ async def _handle_ws(request):
                     asyncio.create_task(_handle_chat(ws, text, msg_id))
             elif msg_type == "status":
                 await _handle_status(ws)
+            elif msg_type == "toggle_status":
+                task_id = data.get("task_id", "")
+                if task_id:
+                    await _handle_toggle_status(ws, task_id)
             elif msg_type == "clear":
                 clear_session_id()
                 await ws.send_json({"type": "response", "text": "Session cleared."})

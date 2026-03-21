@@ -14,9 +14,8 @@ from nanoclaw.rewriter import rewrite_on_timeout
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_MAX_LENGTH = 4096
-_auto_continue: dict[int, int] = {}  # chat_id -> remaining auto-retries
 _AGENT_TIMEOUT = AGENT_TIMEOUT
-_MAX_AUTO_RETRIES = 3
+_MAX_RETRIES = 3
 _TYPING_INTERVAL = 4  # seconds — Telegram typing status lasts ~5s
 _PROGRESS_INTERVAL = 60  # seconds — send progress update if agent is silent
 
@@ -183,11 +182,11 @@ async def _handle_message(update: Update, context) -> None:
                         raise asyncio.TimeoutError()
                     break  # success
                 else:
-                    # Timeout — cancel and give agent a grace period to clean up
+                    # Timeout — cancel agent task
                     agent_task.cancel()
                     try:
-                        await asyncio.wait_for(asyncio.shield(agent_task), timeout=5)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        await agent_task
+                    except (asyncio.CancelledError, Exception):
                         pass
                     raise asyncio.TimeoutError()
             except asyncio.TimeoutError:
@@ -197,24 +196,22 @@ async def _handle_message(update: Update, context) -> None:
                 await typing_task
                 await progress_task
 
-                # Auto-continue without asking
-                remaining = _auto_continue.get(chat_id, 0)
-                if remaining <= 0:
-                    _auto_continue[chat_id] = _MAX_AUTO_RETRIES
-                    remaining = _MAX_AUTO_RETRIES
-                _auto_continue[chat_id] = remaining - 1
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⏱ Timed out (attempt {attempt}) — \"{user_text[:50]}\" — auto-retrying ({remaining} left)...",
-                )
-                should_continue = True
-
-                if not should_continue:
+                if attempt >= _MAX_RETRIES:
                     if notify_state.get("messages"):
                         response = ""
                     else:
-                        response = "⏱ Timed out. No results to show."
+                        response = f"⏱ Timed out after {attempt} attempts. No results to show."
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⏱ Timed out (attempt {attempt}/{_MAX_RETRIES}) — 중단합니다.",
+                    )
                     break
+
+                remaining = _MAX_RETRIES - attempt
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⏱ Timed out (attempt {attempt}/{_MAX_RETRIES}) — auto-retrying ({remaining} left)...",
+                )
 
                 # Resume typing and progress reporting for next attempt
                 stop_typing = asyncio.Event()
@@ -225,7 +222,6 @@ async def _handle_message(update: Update, context) -> None:
                 )
     finally:
         _active_tasks.pop(chat_id, None)
-        _auto_continue.pop(chat_id, None)
         stop_typing.set()
         stop_progress.set()
         await typing_task
