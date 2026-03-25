@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import os
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -19,8 +20,31 @@ _MAX_RETRIES = 3
 _TYPING_INTERVAL = 4  # seconds — Telegram typing status lasts ~5s
 _PROGRESS_INTERVAL = 60  # seconds — send progress update if agent is silent
 
-# Track active tasks per chat: {chat_id: "description of current task"}
-_active_tasks: dict[int, str] = {}
+# Track active tasks per chat: {chat_id: (description, agent_task, cancel_event, stop_typing, stop_progress)}
+_active_tasks: dict[int, tuple[str, asyncio.Task, asyncio.Event, asyncio.Event, asyncio.Event]] = {}
+
+
+def _kill_agent_subprocesses() -> None:
+    """Kill claude.exe subprocesses spawned by the SDK under this nanoclaw process tree."""
+    try:
+        import psutil
+        # Walk up to the root nanoclaw.exe, then kill all claude.exe descendants
+        me = psutil.Process()
+        root = me
+        while root.parent() and "nanoclaw" in root.parent().name().lower():
+            root = root.parent()
+        for child in root.children(recursive=True):
+            try:
+                name = child.name().lower()
+                if "claude" in name:
+                    logger.info("Killing subprocess PID %d (%s) + children", child.pid, child.name())
+                    for grandchild in child.children(recursive=True):
+                        grandchild.kill()
+                    child.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception:
+        logger.exception("Error killing agent subprocesses")
 
 
 def _is_owner(update: Update) -> bool:
@@ -128,13 +152,28 @@ async def _handle_message(update: Update, context) -> None:
 
     chat_id = update.effective_chat.id
 
+    # Cancel running task if user sends "취소"
+    if user_text.strip() in ("취소", "cancel"):
+        active = _active_tasks.get(chat_id)
+        if active:
+            desc, task, cancel_ev, stop_typ, stop_prog = active
+            cancel_ev.set()
+            stop_typ.set()
+            stop_prog.set()
+            _kill_agent_subprocesses()
+            task.cancel()
+            await update.message.reply_text(f"작업을 취소했습니다: \"{desc}\"")
+        else:
+            await update.message.reply_text("진행 중인 작업이 없습니다.")
+        return
+
     # Inject active task info into prompt so the agent is aware
     active = _active_tasks.get(chat_id)
     if active:
-        user_text = f"[System: Another task is running in parallel — \"{active}\"]\n\n{user_text}"
+        desc, _, _, _, _ = active
+        user_text = f"[System: Another task is running in parallel — \"{desc}\"]\n\n{user_text}"
 
-    _active_tasks[chat_id] = user_text[:60]
-
+    cancel_event = asyncio.Event()
     stop_typing = asyncio.Event()
     stop_progress = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id, stop_typing))
@@ -153,6 +192,10 @@ async def _handle_message(update: Update, context) -> None:
     attempt = 0
     try:
         while True:
+            if cancel_event.is_set():
+                logger.info("Task cancelled by user: %s", user_text[:80])
+                response = ""
+                break
             attempt += 1
             if attempt == 1:
                 prompt = user_text
@@ -172,13 +215,31 @@ async def _handle_message(update: Update, context) -> None:
                               reply_to_message_id=update.message.message_id,
                               images=images)
                 )
-                done, _ = await asyncio.wait({agent_task}, timeout=_AGENT_TIMEOUT)
-                if done:
+                _active_tasks[chat_id] = (user_text[:60], agent_task, cancel_event, stop_typing, stop_progress)
+                cancel_waiter = asyncio.create_task(cancel_event.wait())
+                done, pending = await asyncio.wait(
+                    {agent_task, cancel_waiter},
+                    timeout=_AGENT_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                cancel_waiter.cancel()
+                if cancel_event.is_set():
+                    agent_task.cancel()
+                    _kill_agent_subprocesses()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(agent_task), timeout=3)
+                    except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                        pass
+                    response = ""
+                    break
+                if agent_task in done:
                     response = agent_task.result()
                     if notify_state.get("max_turns_exhausted"):
-                        # Agent hit max_turns — treat like timeout for retry
                         logger.warning("Agent exhausted max_turns (attempt %d)", attempt)
                         notify_state["max_turns_exhausted"] = False
+                        if notify_state.get("messages"):
+                            response = ""
+                            break
                         raise asyncio.TimeoutError()
                     break  # success
                 else:
