@@ -64,8 +64,21 @@ async def _start(update: Update, context) -> None:
 async def _clear(update: Update, context) -> None:
     if not _is_owner(update):
         return
+    # Kill all active tasks and subprocesses
+    killed = 0
+    for chat_id, (desc, task, cancel_ev, stop_typ, stop_prog) in list(_active_tasks.items()):
+        cancel_ev.set()
+        stop_typ.set()
+        stop_prog.set()
+        task.cancel()
+        killed += 1
+    _active_tasks.clear()
+    _kill_agent_subprocesses()
     clear_session_id()
-    await update.message.reply_text("Session cleared. Starting fresh!")
+    msg = "Session cleared. Starting fresh!"
+    if killed:
+        msg += f"\n(진행 중이던 작업 {killed}개 중단됨)"
+    await update.message.reply_text(msg)
 
 
 async def _keep_typing(bot, chat_id: int, stop: asyncio.Event,
